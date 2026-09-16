@@ -1,0 +1,15 @@
+<Project>
+  <PropertyGroup>
+    <MatterControllerWinMD>$(MSBuildThisFileDirectory)..\winmd\Matter.Windows.Controller.winmd</MatterControllerWinMD>
+    <MatterControllerXmlDocumentation>$(MSBuildThisFileDirectory)..\winmd\Matter.Windows.Controller.xml</MatterControllerXmlDocumentation>
+    <CsWinRTIncludes>Matter</CsWinRTIncludes>
+  </PropertyGroup>
+  <ItemGroup>
+    <None Include="$(MatterControllerXmlDocumentation)">
+      <Link>Matter.Windows.Controller.xml</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+      <Visible>false</Visible>
+    </None>
+  </ItemGroup>
+</Project>

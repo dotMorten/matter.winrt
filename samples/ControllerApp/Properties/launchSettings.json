@@ -1,0 +1,10 @@
+{
+  "profiles": {
+    "MatterControllerApp (Package)": {
+      "commandName": "MsixPackage"
+    },
+    "MatterControllerApp (Unpackaged)": {
+      "commandName": "Project"
+    }
+  }
+}

@@ -1,0 +1,235 @@
+<?xml version="1.0"?>
+<doc>
+  <assembly>
+    <name>Matter.Windows.Controller</name>
+  </assembly>
+  <members>
+    <member name="T:Matter.Windows.Controller.CommissioningStage">
+      <summary>Identifies the current phase of Matter commissioning.</summary>
+    </member>
+    <member name="F:Matter.Windows.Controller.CommissioningStage.Discovering">
+      <summary>The controller is discovering the commissionable device.</summary>
+    </member>
+    <member name="F:Matter.Windows.Controller.CommissioningStage.Connecting">
+      <summary>The controller is connecting to the device.</summary>
+    </member>
+    <member name="F:Matter.Windows.Controller.CommissioningStage.EstablishingPase">
+      <summary>The controller is establishing the password-authenticated commissioning session.</summary>
+    </member>
+    <member name="F:Matter.Windows.Controller.CommissioningStage.AttestingDevice">
+      <summary>The controller is validating device attestation.</summary>
+    </member>
+    <member name="F:Matter.Windows.Controller.CommissioningStage.ConfiguringDevice">
+      <summary>The controller is provisioning operational credentials and configuration.</summary>
+    </member>
+    <member name="F:Matter.Windows.Controller.CommissioningStage.Completing">
+      <summary>The controller is completing commissioning.</summary>
+    </member>
+    <member name="F:Matter.Windows.Controller.CommissioningStage.Complete">
+      <summary>Commissioning completed successfully.</summary>
+    </member>
+
+    <member name="T:Matter.Windows.Controller.ControllerOptions">
+      <summary>Configures persistent storage, identity, Bluetooth, and preview attestation behavior for a controller.</summary>
+    </member>
+    <member name="M:Matter.Windows.Controller.ControllerOptions.#ctor">
+      <summary>Creates controller options with development-preview defaults.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.ControllerOptions.StoragePath">
+      <summary>Gets or sets the absolute, application-private directory used for Matter fabric and node persistence.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.ControllerOptions.ControllerNodeId">
+      <summary>Gets or sets the operational node identifier of this controller.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.ControllerOptions.BluetoothAdapterId">
+      <summary>Gets or sets the Windows Bluetooth adapter identifier used for BLE commissioning.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.ControllerOptions.AllowTestAttestation">
+      <summary>Gets or sets whether failed device attestation may continue. This preview option must not be enabled in production.</summary>
+    </member>
+
+    <member name="T:Matter.Windows.Controller.OnNetworkCommissioningParameters">
+      <summary>Describes on-network commissioning, including multi-admin commissioning with a sharing code.</summary>
+    </member>
+    <member name="M:Matter.Windows.Controller.OnNetworkCommissioningParameters.#ctor">
+      <summary>Creates on-network commissioning parameters.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.OnNetworkCommissioningParameters.NodeId">
+      <summary>Gets or sets the nonzero operational node identifier to assign to the device on this controller fabric.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.OnNetworkCommissioningParameters.SetupCode">
+      <summary>Gets or sets a manual setup code or an MT: QR payload. Use the sharing code supplied by the device's existing controller for multi-admin commissioning.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.OnNetworkCommissioningParameters.SetupPinCode">
+      <summary>Gets or sets the setup PIN used only when SetupCode is empty.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.OnNetworkCommissioningParameters.LongDiscriminator">
+      <summary>Gets or sets the 12-bit discriminator used only when SetupCode is empty.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.OnNetworkCommissioningParameters.IpAddress">
+      <summary>Gets or sets an optional direct IP address. Direct-IP commissioning is reserved in this preview.</summary>
+    </member>
+
+    <member name="T:Matter.Windows.Controller.BleCommissioningParameters">
+      <summary>Describes Bluetooth LE commissioning.</summary>
+    </member>
+    <member name="M:Matter.Windows.Controller.BleCommissioningParameters.#ctor">
+      <summary>Creates Bluetooth LE commissioning parameters.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.BleCommissioningParameters.NodeId">
+      <summary>Gets or sets the nonzero operational node identifier to assign to the device.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.BleCommissioningParameters.SetupPinCode">
+      <summary>Gets or sets the device setup PIN.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.BleCommissioningParameters.LongDiscriminator">
+      <summary>Gets or sets the device's 12-bit discriminator.</summary>
+    </member>
+
+    <member name="T:Matter.Windows.Controller.CommissioningProgressEventArgs">
+      <summary>Provides commissioning stage and status text.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.CommissioningProgressEventArgs.Stage">
+      <summary>Gets the current commissioning stage.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.CommissioningProgressEventArgs.Message">
+      <summary>Gets a human-readable description of the current stage.</summary>
+    </member>
+
+    <member name="T:Matter.Windows.Controller.CommissionedNode">
+      <summary>Identifies a node persisted by the controller.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.CommissionedNode.NodeId">
+      <summary>Gets the node's operational identifier.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.CommissionedNode.FabricIndex">
+      <summary>Gets the local Matter fabric index.</summary>
+    </member>
+
+    <member name="T:Matter.Windows.Controller.AttributePath">
+      <summary>Identifies a Matter attribute by endpoint, cluster, and attribute identifiers.</summary>
+    </member>
+    <member name="M:Matter.Windows.Controller.AttributePath.#ctor(System.UInt16,System.UInt32,System.UInt32)">
+      <summary>Creates an attribute path.</summary>
+      <param name="endpointId">The endpoint identifier.</param>
+      <param name="clusterId">The cluster identifier.</param>
+      <param name="attributeId">The attribute identifier.</param>
+    </member>
+    <member name="P:Matter.Windows.Controller.AttributePath.EndpointId"><summary>Gets the endpoint identifier.</summary></member>
+    <member name="P:Matter.Windows.Controller.AttributePath.ClusterId"><summary>Gets the cluster identifier.</summary></member>
+    <member name="P:Matter.Windows.Controller.AttributePath.AttributeId"><summary>Gets the attribute identifier.</summary></member>
+
+    <member name="T:Matter.Windows.Controller.CommandPath">
+      <summary>Identifies a Matter command by endpoint, cluster, and command identifiers.</summary>
+    </member>
+    <member name="M:Matter.Windows.Controller.CommandPath.#ctor(System.UInt16,System.UInt32,System.UInt32)">
+      <summary>Creates a command path.</summary>
+      <param name="endpointId">The endpoint identifier.</param>
+      <param name="clusterId">The cluster identifier.</param>
+      <param name="commandId">The command identifier.</param>
+    </member>
+    <member name="P:Matter.Windows.Controller.CommandPath.EndpointId"><summary>Gets the endpoint identifier.</summary></member>
+    <member name="P:Matter.Windows.Controller.CommandPath.ClusterId"><summary>Gets the cluster identifier.</summary></member>
+    <member name="P:Matter.Windows.Controller.CommandPath.CommandId"><summary>Gets the command identifier.</summary></member>
+
+    <member name="T:Matter.Windows.Controller.AttributeValue">
+      <summary>Contains a generic Matter attribute path and decoded value.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.AttributeValue.Path"><summary>Gets the reported attribute path.</summary></member>
+    <member name="P:Matter.Windows.Controller.AttributeValue.Data">
+      <summary>Gets the decoded TLV value. Scalars use the value key; structures use decimal context-tag keys.</summary>
+    </member>
+    <member name="T:Matter.Windows.Controller.CommandResult">
+      <summary>Contains a command path and decoded response fields.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.CommandResult.Path"><summary>Gets the invoked command path.</summary></member>
+    <member name="P:Matter.Windows.Controller.CommandResult.Data"><summary>Gets the decoded command response fields.</summary></member>
+    <member name="T:Matter.Windows.Controller.AttributeReportEventArgs"><summary>Provides an attribute value emitted by a subscription.</summary></member>
+    <member name="P:Matter.Windows.Controller.AttributeReportEventArgs.Value"><summary>Gets the reported attribute value.</summary></member>
+
+    <member name="T:Matter.Windows.Controller.AttributeSubscription">
+      <summary>Represents an active Matter attribute subscription.</summary>
+    </member>
+    <member name="E:Matter.Windows.Controller.AttributeSubscription.ReportReceived">
+      <summary>Occurs when the device reports a new attribute value.</summary>
+    </member>
+    <member name="M:Matter.Windows.Controller.AttributeSubscription.CloseAsync">
+      <summary>Closes the subscription and releases its Interaction Model exchange.</summary>
+      <returns>An asynchronous close action.</returns>
+    </member>
+
+    <member name="T:Matter.Windows.Controller.BasicInformation">
+      <summary>Contains commonly used Basic Information cluster attributes.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.BasicInformation.VendorId"><summary>Gets the vendor identifier.</summary></member>
+    <member name="P:Matter.Windows.Controller.BasicInformation.VendorName"><summary>Gets the vendor name.</summary></member>
+    <member name="P:Matter.Windows.Controller.BasicInformation.ProductId"><summary>Gets the product identifier.</summary></member>
+    <member name="P:Matter.Windows.Controller.BasicInformation.ProductName"><summary>Gets the product name.</summary></member>
+    <member name="P:Matter.Windows.Controller.BasicInformation.NodeLabel"><summary>Gets the user-assigned node label.</summary></member>
+    <member name="P:Matter.Windows.Controller.BasicInformation.SerialNumber"><summary>Gets the serial number, or an empty string when the optional attribute is unavailable.</summary></member>
+    <member name="P:Matter.Windows.Controller.BasicInformation.SoftwareVersion"><summary>Gets the numeric software version.</summary></member>
+    <member name="P:Matter.Windows.Controller.BasicInformation.SoftwareVersionString"><summary>Gets the display software version.</summary></member>
+
+    <member name="T:Matter.Windows.Controller.OnOffCluster"><summary>Provides typed access to a node's On/Off cluster.</summary></member>
+    <member name="M:Matter.Windows.Controller.OnOffCluster.ReadAsync"><summary>Reads the OnOff attribute.</summary><returns>The current on/off state.</returns></member>
+    <member name="M:Matter.Windows.Controller.OnOffCluster.SetAsync(System.Boolean)"><summary>Sets the on/off state with the On or Off command.</summary><param name="value">The desired state.</param><returns>An asynchronous action.</returns></member>
+    <member name="M:Matter.Windows.Controller.OnOffCluster.OnAsync"><summary>Sends the On command.</summary><returns>An asynchronous action.</returns></member>
+    <member name="M:Matter.Windows.Controller.OnOffCluster.OffAsync"><summary>Sends the Off command.</summary><returns>An asynchronous action.</returns></member>
+    <member name="M:Matter.Windows.Controller.OnOffCluster.ToggleAsync"><summary>Sends the Toggle command.</summary><returns>An asynchronous action.</returns></member>
+    <member name="M:Matter.Windows.Controller.OnOffCluster.SubscribeAsync(System.UInt16,System.UInt16)">
+      <summary>Subscribes to OnOff attribute reports.</summary>
+      <param name="minimumIntervalSeconds">The minimum reporting interval.</param>
+      <param name="maximumIntervalSeconds">The maximum reporting interval.</param>
+      <returns>The established subscription.</returns>
+    </member>
+
+    <member name="T:Matter.Windows.Controller.LevelControlCluster"><summary>Provides typed access to a node's Level Control cluster.</summary></member>
+    <member name="M:Matter.Windows.Controller.LevelControlCluster.ReadCurrentLevelAsync"><summary>Reads CurrentLevel.</summary><returns>The current level from 0 through 254.</returns></member>
+    <member name="M:Matter.Windows.Controller.LevelControlCluster.MoveToLevelAsync(System.Byte,System.UInt16,System.Byte,System.Byte)">
+      <summary>Sends the MoveToLevel command.</summary>
+      <param name="level">The target level from 0 through 254.</param>
+      <param name="transitionTime">The transition duration in tenths of a second.</param>
+      <param name="optionsMask">The options mask.</param>
+      <param name="optionsOverride">The options override.</param>
+      <returns>An asynchronous action.</returns>
+    </member>
+    <member name="M:Matter.Windows.Controller.LevelControlCluster.SubscribeAsync(System.UInt16,System.UInt16)">
+      <summary>Subscribes to CurrentLevel reports.</summary>
+      <param name="minimumIntervalSeconds">The minimum reporting interval.</param>
+      <param name="maximumIntervalSeconds">The maximum reporting interval.</param>
+      <returns>The established subscription.</returns>
+    </member>
+
+    <member name="T:Matter.Windows.Controller.BasicInformationCluster"><summary>Provides typed access to a node's Basic Information cluster.</summary></member>
+    <member name="M:Matter.Windows.Controller.BasicInformationCluster.ReadAsync"><summary>Reads common Basic Information attributes.</summary><returns>The decoded device information.</returns></member>
+
+    <member name="T:Matter.Windows.Controller.MatterController">
+      <summary>Owns one persistent Matter controller fabric and provides commissioning and Interaction Model operations.</summary>
+      <remarks>Only one controller may be active in a process. Call CloseAsync before releasing the application.</remarks>
+    </member>
+    <member name="M:Matter.Windows.Controller.MatterController.CreateAsync(Matter.Windows.Controller.ControllerOptions)">
+      <summary>Creates and initializes the process controller or restores its persisted fabric.</summary>
+      <param name="options">Controller initialization options.</param>
+      <returns>The initialized controller.</returns>
+    </member>
+    <member name="E:Matter.Windows.Controller.MatterController.CommissioningProgress"><summary>Occurs when commissioning progress changes.</summary></member>
+    <member name="M:Matter.Windows.Controller.MatterController.CommissionOnNetworkAsync(Matter.Windows.Controller.OnNetworkCommissioningParameters)">
+      <summary>Commissions a device reachable on the IP network. A sharing code enables multi-admin commissioning.</summary>
+      <param name="parameters">The node identifier and setup payload.</param>
+      <returns>The persisted commissioned node.</returns>
+    </member>
+    <member name="M:Matter.Windows.Controller.MatterController.CommissionBleAsync(Matter.Windows.Controller.BleCommissioningParameters)">
+      <summary>Commissions a device over Bluetooth LE.</summary><param name="parameters">BLE commissioning parameters.</param><returns>The persisted commissioned node.</returns>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterController.CommissionedNodes"><summary>Gets a snapshot of nodes persisted by this controller.</summary></member>
+    <member name="M:Matter.Windows.Controller.MatterController.RemoveNodeAsync(System.UInt64)"><summary>Starts removing a node from the fabric and persisted node index.</summary><param name="nodeId">The node identifier.</param><returns>An asynchronous action.</returns></member>
+    <member name="M:Matter.Windows.Controller.MatterController.ReadAttributeAsync(System.UInt64,Matter.Windows.Controller.AttributePath)"><summary>Reads and recursively decodes a Matter attribute.</summary><param name="nodeId">The node identifier.</param><param name="path">The attribute path.</param><returns>The decoded attribute value.</returns></member>
+    <member name="M:Matter.Windows.Controller.MatterController.WriteAttributeAsync(System.UInt64,Matter.Windows.Controller.AttributePath,System.Collections.Generic.IDictionary{System.String,System.Object})"><summary>Encodes and writes a generic Matter attribute value.</summary><param name="nodeId">The node identifier.</param><param name="path">The attribute path.</param><param name="value">The generic TLV property-set representation.</param><returns>An asynchronous action.</returns></member>
+    <member name="M:Matter.Windows.Controller.MatterController.InvokeCommandAsync(System.UInt64,Matter.Windows.Controller.CommandPath,System.Collections.Generic.IDictionary{System.String,System.Object})"><summary>Encodes and invokes a generic Matter command.</summary><param name="nodeId">The node identifier.</param><param name="path">The command path.</param><param name="arguments">Command fields keyed by decimal context tag.</param><returns>The decoded command response.</returns></member>
+    <member name="M:Matter.Windows.Controller.MatterController.SubscribeAttributeAsync(System.UInt64,Matter.Windows.Controller.AttributePath,System.UInt16,System.UInt16)"><summary>Establishes a generic attribute subscription.</summary><param name="nodeId">The node identifier.</param><param name="path">The attribute path.</param><param name="minimumIntervalSeconds">The minimum reporting interval.</param><param name="maximumIntervalSeconds">The maximum reporting interval.</param><returns>The established subscription.</returns></member>
+    <member name="M:Matter.Windows.Controller.MatterController.GetOnOffCluster(System.UInt64,System.UInt16)"><summary>Creates a typed On/Off cluster client.</summary><param name="nodeId">The node identifier.</param><param name="endpointId">The endpoint identifier.</param><returns>The cluster client.</returns></member>
+    <member name="M:Matter.Windows.Controller.MatterController.GetLevelControlCluster(System.UInt64,System.UInt16)"><summary>Creates a typed Level Control cluster client.</summary><param name="nodeId">The node identifier.</param><param name="endpointId">The endpoint identifier.</param><returns>The cluster client.</returns></member>
+    <member name="M:Matter.Windows.Controller.MatterController.GetBasicInformationCluster(System.UInt64,System.UInt16)"><summary>Creates a typed Basic Information cluster client.</summary><param name="nodeId">The node identifier.</param><param name="endpointId">The endpoint identifier.</param><returns>The cluster client.</returns></member>
+    <member name="M:Matter.Windows.Controller.MatterController.CloseAsync"><summary>Stops subscriptions, shuts down the Matter stack, and releases the storage directory.</summary><returns>An asynchronous close action.</returns></member>
+  </members>
+</doc>

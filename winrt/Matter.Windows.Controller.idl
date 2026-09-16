@@ -1,0 +1,145 @@
+import "windows.foundation.idl";
+
+namespace Matter.Windows.Controller
+{
+    enum CommissioningStage
+    {
+        Discovering = 0,
+        Connecting = 1,
+        EstablishingPase = 2,
+        AttestingDevice = 3,
+        ConfiguringDevice = 4,
+        Completing = 5,
+        Complete = 6
+    };
+
+    runtimeclass ControllerOptions
+    {
+        ControllerOptions();
+        String StoragePath { get; set; };
+        UInt64 ControllerNodeId { get; set; };
+        UInt32 BluetoothAdapterId { get; set; };
+        Boolean AllowTestAttestation { get; set; };
+    };
+
+    runtimeclass OnNetworkCommissioningParameters
+    {
+        OnNetworkCommissioningParameters();
+        UInt64 NodeId { get; set; };
+        String SetupCode { get; set; };
+        UInt32 SetupPinCode { get; set; };
+        UInt16 LongDiscriminator { get; set; };
+        String IpAddress { get; set; };
+    };
+
+    runtimeclass BleCommissioningParameters
+    {
+        BleCommissioningParameters();
+        UInt64 NodeId { get; set; };
+        UInt32 SetupPinCode { get; set; };
+        UInt16 LongDiscriminator { get; set; };
+    };
+
+    runtimeclass CommissioningProgressEventArgs
+    {
+        CommissioningStage Stage { get; };
+        String Message { get; };
+    };
+
+    runtimeclass CommissionedNode
+    {
+        UInt64 NodeId { get; };
+        UInt16 FabricIndex { get; };
+    };
+
+    runtimeclass AttributePath
+    {
+        AttributePath(UInt16 endpointId, UInt32 clusterId, UInt32 attributeId);
+        UInt16 EndpointId { get; };
+        UInt32 ClusterId { get; };
+        UInt32 AttributeId { get; };
+    };
+
+    runtimeclass CommandPath
+    {
+        CommandPath(UInt16 endpointId, UInt32 clusterId, UInt32 commandId);
+        UInt16 EndpointId { get; };
+        UInt32 ClusterId { get; };
+        UInt32 CommandId { get; };
+    };
+
+    runtimeclass AttributeValue
+    {
+        AttributePath Path { get; };
+        Windows.Foundation.Collections.IPropertySet Data { get; };
+    };
+
+    runtimeclass CommandResult
+    {
+        CommandPath Path { get; };
+        Windows.Foundation.Collections.IPropertySet Data { get; };
+    };
+
+    runtimeclass AttributeReportEventArgs
+    {
+        AttributeValue Value { get; };
+    };
+
+    runtimeclass AttributeSubscription
+    {
+        event Windows.Foundation.TypedEventHandler<AttributeSubscription, AttributeReportEventArgs> ReportReceived;
+        Windows.Foundation.IAsyncAction CloseAsync();
+    };
+
+    runtimeclass BasicInformation
+    {
+        UInt16 VendorId { get; };
+        String VendorName { get; };
+        UInt16 ProductId { get; };
+        String ProductName { get; };
+        String NodeLabel { get; };
+        String SerialNumber { get; };
+        UInt32 SoftwareVersion { get; };
+        String SoftwareVersionString { get; };
+    };
+
+    runtimeclass OnOffCluster
+    {
+        Windows.Foundation.IAsyncOperation<Boolean> ReadAsync();
+        Windows.Foundation.IAsyncAction SetAsync(Boolean value);
+        Windows.Foundation.IAsyncAction OnAsync();
+        Windows.Foundation.IAsyncAction OffAsync();
+        Windows.Foundation.IAsyncAction ToggleAsync();
+        Windows.Foundation.IAsyncOperation<AttributeSubscription> SubscribeAsync(UInt16 minimumIntervalSeconds, UInt16 maximumIntervalSeconds);
+    };
+
+    runtimeclass LevelControlCluster
+    {
+        Windows.Foundation.IAsyncOperation<UInt8> ReadCurrentLevelAsync();
+        Windows.Foundation.IAsyncAction MoveToLevelAsync(UInt8 level, UInt16 transitionTime, UInt8 optionsMask, UInt8 optionsOverride);
+        Windows.Foundation.IAsyncOperation<AttributeSubscription> SubscribeAsync(UInt16 minimumIntervalSeconds, UInt16 maximumIntervalSeconds);
+    };
+
+    runtimeclass BasicInformationCluster
+    {
+        Windows.Foundation.IAsyncOperation<BasicInformation> ReadAsync();
+    };
+
+    runtimeclass MatterController
+    {
+        static Windows.Foundation.IAsyncOperation<MatterController> CreateAsync(ControllerOptions options);
+        event Windows.Foundation.TypedEventHandler<MatterController, CommissioningProgressEventArgs> CommissioningProgress;
+        Windows.Foundation.IAsyncOperation<CommissionedNode> CommissionOnNetworkAsync(OnNetworkCommissioningParameters parameters);
+        Windows.Foundation.IAsyncOperation<CommissionedNode> CommissionBleAsync(BleCommissioningParameters parameters);
+        Windows.Foundation.Collections.IVectorView<CommissionedNode> CommissionedNodes { get; };
+        Windows.Foundation.IAsyncAction RemoveNodeAsync(UInt64 nodeId);
+        Windows.Foundation.IAsyncOperation<AttributeValue> ReadAttributeAsync(UInt64 nodeId, AttributePath path);
+        Windows.Foundation.IAsyncAction WriteAttributeAsync(UInt64 nodeId, AttributePath path, Windows.Foundation.Collections.IPropertySet value);
+        Windows.Foundation.IAsyncOperation<CommandResult> InvokeCommandAsync(UInt64 nodeId, CommandPath path, Windows.Foundation.Collections.IPropertySet arguments);
+        Windows.Foundation.IAsyncOperation<AttributeSubscription> SubscribeAttributeAsync(UInt64 nodeId, AttributePath path, UInt16 minimumIntervalSeconds, UInt16 maximumIntervalSeconds);
+        OnOffCluster GetOnOffCluster(UInt64 nodeId, UInt16 endpointId);
+        LevelControlCluster GetLevelControlCluster(UInt64 nodeId, UInt16 endpointId);
+        BasicInformationCluster GetBasicInformationCluster(UInt64 nodeId, UInt16 endpointId);
+        Windows.Foundation.IAsyncAction CloseAsync();
+    };
+}

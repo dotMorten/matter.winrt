@@ -1,0 +1,3 @@
+group("matter_winrt") {
+  deps = [ "//winrt:Matter.Windows.Controller" ]
+}

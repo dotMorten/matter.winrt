@@ -1,0 +1,1976 @@
+#include "ProjectionTypes.h"
+
+#include <app-common/zap-generated/cluster-objects.h>
+#include <app/CommandSender.h>
+#include <app/InteractionModelEngine.h>
+#include <app/ReadClient.h>
+#include <app/WriteClient.h>
+#include <app/data-model/EncodableToTLV.h>
+#include <app/server-cluster/testing/EmptyProvider.h>
+#include <controller/CHIPCluster.h>
+#include <controller/CHIPDeviceController.h>
+#include <controller/CHIPDeviceControllerFactory.h>
+#include <controller/ExampleOperationalCredentialsIssuer.h>
+#include <controller/InvokeInteraction.h>
+#include <credentials/GroupDataProviderImpl.h>
+#include <credentials/PersistentStorageOpCertStore.h>
+#include <credentials/attestation_verifier/DefaultDeviceAttestationVerifier.h>
+#include <crypto/PersistentStorageOperationalKeystore.h>
+#include <crypto/RawKeySessionKeystore.h>
+#include <lib/support/CHIPMem.h>
+#include <lib/support/TestGroupData.h>
+#include <lib/core/TLV.h>
+#include <platform/CHIPDeviceLayer.h>
+#include <platform/KvsPersistentStorageDelegate.h>
+#include <platform/Windows/BLEManagerImpl.h>
+#include <platform/Windows/ConfigurationManagerImpl.h>
+#include <setup_payload/ManualSetupPayloadGenerator.h>
+#include <setup_payload/SetupPayload.h>
+
+#include <chrono>
+#include <algorithm>
+#include <array>
+#include <condition_variable>
+#include <filesystem>
+#include <limits>
+#include <mutex>
+#include <string>
+#include <type_traits>
+#include <utility>
+#include <vector>
+
+namespace winrt::Matter::Windows::Controller::implementation {
+namespace {
+
+using namespace chip;
+using namespace chip::Controller;
+using namespace chip::DeviceLayer;
+
+constexpr FabricId kControllerFabricId = 1;
+constexpr auto kCommissioningTimeout    = std::chrono::seconds(120);
+constexpr auto kInteractionTimeout      = std::chrono::seconds(30);
+constexpr char kCommissionedNodesKey[] = "winrt/nodes";
+constexpr size_t kGenericTlvBufferSize = 64 * 1024;
+
+[[noreturn]] void ThrowChipError(CHIP_ERROR error, wchar_t const * operation)
+{
+    std::wstring message(operation);
+    message.append(L": ");
+    message.append(to_hstring(error.AsString()).c_str());
+    throw hresult_error(HRESULT_FROM_WIN32(ERROR_GEN_FAILURE), message);
+}
+
+void CheckChipError(CHIP_ERROR error, wchar_t const * operation)
+{
+    if (error != CHIP_NO_ERROR)
+    {
+        ThrowChipError(error, operation);
+    }
+}
+
+CHIP_ERROR EncodeInspectable(TLV::TLVWriter & writer, TLV::Tag tag, Windows::Foundation::IInspectable const & value);
+
+CHIP_ERROR EncodePropertySet(TLV::TLVWriter & writer, TLV::Tag tag,
+                             Windows::Foundation::Collections::IPropertySet const & values)
+{
+    TLV::TLVType container;
+    ReturnErrorOnFailure(writer.StartContainer(tag, TLV::kTLVType_Structure, container));
+    std::vector<std::pair<uint8_t, Windows::Foundation::IInspectable>> fields;
+    for (auto const & entry : values)
+    {
+        std::string key = to_string(entry.Key());
+        char * end      = nullptr;
+        unsigned long number = std::strtoul(key.c_str(), &end, 10);
+        VerifyOrReturnError(end != key.c_str() && *end == '\0' && number <= UINT8_MAX, CHIP_ERROR_INVALID_ARGUMENT);
+        fields.emplace_back(static_cast<uint8_t>(number), entry.Value());
+    }
+    std::sort(fields.begin(), fields.end(), [](auto const & left, auto const & right) { return left.first < right.first; });
+    for (auto const & field : fields)
+    {
+        ReturnErrorOnFailure(EncodeInspectable(writer, TLV::ContextTag(field.first), field.second));
+    }
+    return writer.EndContainer(container);
+}
+
+CHIP_ERROR EncodeInspectable(TLV::TLVWriter & writer, TLV::Tag tag, Windows::Foundation::IInspectable const & value)
+{
+    if (!value)
+    {
+        return writer.PutNull(tag);
+    }
+    if (auto propertySet = value.try_as<Windows::Foundation::Collections::IPropertySet>())
+    {
+        return EncodePropertySet(writer, tag, propertySet);
+    }
+    if (auto inspectableVector = value.try_as<Windows::Foundation::Collections::IVector<Windows::Foundation::IInspectable>>())
+    {
+        TLV::TLVType container;
+        ReturnErrorOnFailure(writer.StartContainer(tag, TLV::kTLVType_Array, container));
+        for (auto const & item : inspectableVector)
+        {
+            ReturnErrorOnFailure(EncodeInspectable(writer, TLV::AnonymousTag(), item));
+        }
+        return writer.EndContainer(container);
+    }
+    if (auto byteVector = value.try_as<Windows::Foundation::Collections::IVector<uint8_t>>())
+    {
+        std::vector<uint8_t> bytes(byteVector.Size());
+        byteVector.GetMany(0, bytes);
+        return writer.PutBytes(tag, bytes.data(), static_cast<uint32_t>(bytes.size()));
+    }
+
+    auto propertyValue = value.try_as<Windows::Foundation::IPropertyValue>();
+    VerifyOrReturnError(propertyValue, CHIP_ERROR_INVALID_ARGUMENT);
+    switch (propertyValue.Type())
+    {
+    case Windows::Foundation::PropertyType::Boolean:
+        return writer.Put(tag, propertyValue.GetBoolean());
+    case Windows::Foundation::PropertyType::Int16:
+        return writer.Put(tag, propertyValue.GetInt16());
+    case Windows::Foundation::PropertyType::Int32:
+        return writer.Put(tag, propertyValue.GetInt32());
+    case Windows::Foundation::PropertyType::Int64:
+        return writer.Put(tag, propertyValue.GetInt64());
+    case Windows::Foundation::PropertyType::UInt8:
+        return writer.Put(tag, propertyValue.GetUInt8());
+    case Windows::Foundation::PropertyType::UInt16:
+        return writer.Put(tag, propertyValue.GetUInt16());
+    case Windows::Foundation::PropertyType::UInt32:
+        return writer.Put(tag, propertyValue.GetUInt32());
+    case Windows::Foundation::PropertyType::UInt64:
+        return writer.Put(tag, propertyValue.GetUInt64());
+    case Windows::Foundation::PropertyType::Single:
+        return writer.Put(tag, propertyValue.GetSingle());
+    case Windows::Foundation::PropertyType::Double:
+        return writer.Put(tag, propertyValue.GetDouble());
+    case Windows::Foundation::PropertyType::String: {
+        std::string text = to_string(propertyValue.GetString());
+        return writer.PutString(tag, CharSpan(text.data(), text.size()));
+    }
+    case Windows::Foundation::PropertyType::UInt8Array: {
+        com_array<uint8_t> bytes;
+        propertyValue.GetUInt8Array(bytes);
+        return writer.PutBytes(tag, bytes.data(), static_cast<uint32_t>(bytes.size()));
+    }
+    default:
+        return CHIP_ERROR_INVALID_ARGUMENT;
+    }
+}
+
+CHIP_ERROR EncodePropertySetRoot(Windows::Foundation::Collections::IPropertySet const & values, std::vector<uint8_t> & encoded)
+{
+    VerifyOrReturnError(values, CHIP_ERROR_INVALID_ARGUMENT);
+    encoded.resize(kGenericTlvBufferSize);
+    TLV::TLVWriter writer;
+    writer.Init(encoded.data(), encoded.size());
+    if (values.HasKey(L"value"))
+    {
+        VerifyOrReturnError(values.Size() == 1, CHIP_ERROR_INVALID_ARGUMENT);
+        ReturnErrorOnFailure(EncodeInspectable(writer, TLV::AnonymousTag(), values.Lookup(L"value")));
+    }
+    else
+    {
+        ReturnErrorOnFailure(EncodePropertySet(writer, TLV::AnonymousTag(), values));
+    }
+    ReturnErrorOnFailure(writer.Finalize());
+    encoded.resize(writer.GetLengthWritten());
+    return CHIP_NO_ERROR;
+}
+
+CHIP_ERROR DecodeTlvValue(TLV::TLVReader & reader, Windows::Foundation::IInspectable & value)
+{
+    switch (reader.GetType())
+    {
+    case TLV::kTLVType_Boolean: {
+        bool decoded;
+        ReturnErrorOnFailure(reader.Get(decoded));
+        value = box_value(decoded);
+        return CHIP_NO_ERROR;
+    }
+    case TLV::kTLVType_SignedInteger: {
+        int64_t decoded;
+        ReturnErrorOnFailure(reader.Get(decoded));
+        value = box_value(decoded);
+        return CHIP_NO_ERROR;
+    }
+    case TLV::kTLVType_UnsignedInteger: {
+        uint64_t decoded;
+        ReturnErrorOnFailure(reader.Get(decoded));
+        value = box_value(decoded);
+        return CHIP_NO_ERROR;
+    }
+    case TLV::kTLVType_FloatingPointNumber: {
+        double decoded;
+        ReturnErrorOnFailure(reader.Get(decoded));
+        value = box_value(decoded);
+        return CHIP_NO_ERROR;
+    }
+    case TLV::kTLVType_UTF8String: {
+        CharSpan decoded;
+        ReturnErrorOnFailure(reader.Get(decoded));
+        value = box_value(to_hstring(std::string(decoded.data(), decoded.size())));
+        return CHIP_NO_ERROR;
+    }
+    case TLV::kTLVType_ByteString: {
+        ByteSpan decoded;
+        ReturnErrorOnFailure(reader.Get(decoded));
+        std::vector<uint8_t> bytes(decoded.begin(), decoded.end());
+        value = single_threaded_vector(std::move(bytes)).as<Windows::Foundation::IInspectable>();
+        return CHIP_NO_ERROR;
+    }
+    case TLV::kTLVType_Null:
+        value = nullptr;
+        return CHIP_NO_ERROR;
+    case TLV::kTLVType_Structure: {
+        Windows::Foundation::Collections::PropertySet properties;
+        TLV::TLVType container;
+        ReturnErrorOnFailure(reader.EnterContainer(container));
+        CHIP_ERROR error;
+        while ((error = reader.Next()) == CHIP_NO_ERROR)
+        {
+            VerifyOrReturnError(TLV::IsContextTag(reader.GetTag()), CHIP_ERROR_INVALID_TLV_TAG);
+            Windows::Foundation::IInspectable field;
+            ReturnErrorOnFailure(DecodeTlvValue(reader, field));
+            properties.Insert(to_hstring(TLV::TagNumFromTag(reader.GetTag())), field);
+        }
+        VerifyOrReturnError(error == CHIP_END_OF_TLV, error);
+        ReturnErrorOnFailure(reader.ExitContainer(container));
+        value = properties;
+        return CHIP_NO_ERROR;
+    }
+    case TLV::kTLVType_Array:
+    case TLV::kTLVType_List: {
+        auto items = single_threaded_vector<Windows::Foundation::IInspectable>();
+        TLV::TLVType container;
+        ReturnErrorOnFailure(reader.EnterContainer(container));
+        CHIP_ERROR error;
+        while ((error = reader.Next()) == CHIP_NO_ERROR)
+        {
+            Windows::Foundation::IInspectable item;
+            ReturnErrorOnFailure(DecodeTlvValue(reader, item));
+            items.Append(item);
+        }
+        VerifyOrReturnError(error == CHIP_END_OF_TLV, error);
+        ReturnErrorOnFailure(reader.ExitContainer(container));
+        value = items.as<Windows::Foundation::IInspectable>();
+        return CHIP_NO_ERROR;
+    }
+    default:
+        return CHIP_ERROR_WRONG_TLV_TYPE;
+    }
+}
+
+Windows::Foundation::Collections::IPropertySet DecodePropertySetRoot(TLV::TLVReader & reader)
+{
+    Windows::Foundation::IInspectable decoded;
+    CheckChipError(DecodeTlvValue(reader, decoded), L"Decode Matter TLV");
+    if (auto properties = decoded.try_as<Windows::Foundation::Collections::IPropertySet>())
+    {
+        return properties;
+    }
+    Windows::Foundation::Collections::PropertySet result;
+    result.Insert(L"value", decoded);
+    return result;
+}
+
+template <typename Value>
+Value PropertySetScalar(Windows::Foundation::Collections::IPropertySet const & values, wchar_t const * description)
+{
+    if (!values || !values.HasKey(L"value") || !values.Lookup(L"value"))
+    {
+        throw hresult_error(E_BOUNDS, hstring(description) + L" is null or missing.");
+    }
+    try
+    {
+        if constexpr (std::is_integral_v<Value> && std::is_unsigned_v<Value> && !std::is_same_v<Value, bool>)
+        {
+            uint64_t decoded = unbox_value<uint64_t>(values.Lookup(L"value"));
+            if (decoded > std::numeric_limits<Value>::max())
+            {
+                throw hresult_error(E_BOUNDS, hstring(description) + L" is outside the projected numeric range.");
+            }
+            return static_cast<Value>(decoded);
+        }
+        else if constexpr (std::is_integral_v<Value> && std::is_signed_v<Value>)
+        {
+            int64_t decoded = unbox_value<int64_t>(values.Lookup(L"value"));
+            if (decoded < std::numeric_limits<Value>::min() || decoded > std::numeric_limits<Value>::max())
+            {
+                throw hresult_error(E_BOUNDS, hstring(description) + L" is outside the projected numeric range.");
+            }
+            return static_cast<Value>(decoded);
+        }
+        else
+        {
+            return unbox_value<Value>(values.Lookup(L"value"));
+        }
+    }
+    catch (hresult_error const &)
+    {
+        throw hresult_error(E_INVALIDARG, hstring(description) + L" has an unexpected Matter type.");
+    }
+}
+
+struct PairingState
+{
+    std::mutex mutex;
+    std::condition_variable condition;
+    bool complete = false;
+    CHIP_ERROR error = CHIP_NO_ERROR;
+};
+
+class PairingDelegate final : public DevicePairingDelegate, public Credentials::DeviceAttestationDelegate
+{
+public:
+    PairingDelegate(PairingState & state, bool allowTestAttestation) : mState(state), mAllowTestAttestation(allowTestAttestation) {}
+
+    void Reset()
+    {
+        std::scoped_lock lock(mState.mutex);
+        mState.complete = false;
+        mState.error    = CHIP_NO_ERROR;
+    }
+
+    void OnCommissioningComplete(NodeId, CHIP_ERROR error) override
+    {
+        {
+            std::scoped_lock lock(mState.mutex);
+            mState.complete = true;
+            mState.error    = error;
+        }
+        mState.condition.notify_all();
+    }
+
+    Optional<uint16_t> FailSafeExpiryTimeoutSecs() const override { return NullOptional; }
+
+    void OnDeviceAttestationCompleted(DeviceCommissioner * commissioner, DeviceProxy * device,
+                                      const Credentials::DeviceAttestationVerifier::AttestationDeviceInfo &,
+                                      Credentials::AttestationVerificationResult result) override
+    {
+        if (result != Credentials::AttestationVerificationResult::kSuccess && !mAllowTestAttestation)
+        {
+            OnCommissioningComplete(kUndefinedNodeId, CHIP_ERROR_CERT_NOT_TRUSTED);
+            return;
+        }
+
+        CHIP_ERROR error =
+            commissioner->ContinueCommissioningAfterDeviceAttestation(device, Credentials::AttestationVerificationResult::kSuccess);
+        if (error != CHIP_NO_ERROR)
+        {
+            OnCommissioningComplete(kUndefinedNodeId, error);
+        }
+    }
+
+private:
+    PairingState & mState;
+    bool mAllowTestAttestation;
+};
+
+enum class OnOffOperation
+{
+    Read,
+    On,
+    Off,
+    Toggle,
+};
+
+struct OnOffOperationState
+{
+    OnOffOperationState(OnOffOperation requestedOperation, EndpointId requestedEndpoint) :
+        operation(requestedOperation), endpoint(requestedEndpoint), onConnected(&HandleConnected, this),
+        onConnectionFailure(&HandleConnectionFailure, this)
+    {}
+
+    void Finish(CHIP_ERROR result)
+    {
+        {
+            std::scoped_lock lock(mutex);
+            if (complete)
+            {
+                return;
+            }
+            error    = result;
+            complete = true;
+        }
+        condition.notify_all();
+    }
+
+    void FinishRead(bool value)
+    {
+        valueRead = value;
+        Finish(CHIP_NO_ERROR);
+    }
+
+    static void HandleConnected(void * context, Messaging::ExchangeManager & exchangeManager, SessionHandle const & session)
+    {
+        auto * state = static_cast<OnOffOperationState *>(context);
+        CHIP_ERROR error;
+        if (state->operation == OnOffOperation::Read)
+        {
+            ClusterBase cluster(exchangeManager, session, state->endpoint);
+            error = cluster.ReadAttribute<app::Clusters::OnOff::Attributes::OnOff::TypeInfo>(
+                state, [](void * callbackContext, bool value) { static_cast<OnOffOperationState *>(callbackContext)->FinishRead(value); },
+                [](void * callbackContext, CHIP_ERROR readError) {
+                    static_cast<OnOffOperationState *>(callbackContext)->Finish(readError);
+                });
+        }
+        else
+        {
+            auto success = [state](app::ConcreteCommandPath const &, app::StatusIB const & status,
+                                   app::DataModel::NullObjectType const &) { state->Finish(status.ToChipError()); };
+            auto failure = [state](CHIP_ERROR commandError) { state->Finish(commandError); };
+            if (state->operation == OnOffOperation::On)
+            {
+                app::Clusters::OnOff::Commands::On::Type request;
+                error = InvokeCommandRequest(&exchangeManager, session, state->endpoint, request, success, failure);
+            }
+            else if (state->operation == OnOffOperation::Off)
+            {
+                app::Clusters::OnOff::Commands::Off::Type request;
+                error = InvokeCommandRequest(&exchangeManager, session, state->endpoint, request, success, failure);
+            }
+            else
+            {
+                app::Clusters::OnOff::Commands::Toggle::Type request;
+                error = InvokeCommandRequest(&exchangeManager, session, state->endpoint, request, success, failure);
+            }
+        }
+        if (error != CHIP_NO_ERROR)
+        {
+            state->Finish(error);
+        }
+    }
+
+    static void HandleConnectionFailure(void * context, ScopedNodeId const &, CHIP_ERROR error)
+    {
+        static_cast<OnOffOperationState *>(context)->Finish(error);
+    }
+
+    OnOffOperation operation;
+    EndpointId endpoint;
+    std::mutex mutex;
+    std::condition_variable condition;
+    bool complete = false;
+    bool valueRead = false;
+    CHIP_ERROR error = CHIP_NO_ERROR;
+    chip::Callback::Callback<OnDeviceConnected> onConnected;
+    chip::Callback::Callback<OnDeviceConnectionFailure> onConnectionFailure;
+};
+
+template <typename Request>
+struct CommandOperationState
+{
+    CommandOperationState(EndpointId requestedEndpoint, Request requested) :
+        endpoint(requestedEndpoint), request(std::move(requested)), onConnected(&HandleConnected, this),
+        onConnectionFailure(&HandleConnectionFailure, this)
+    {}
+
+    void Finish(CHIP_ERROR result)
+    {
+        {
+            std::scoped_lock lock(mutex);
+            if (complete)
+            {
+                return;
+            }
+            complete = true;
+            error    = result;
+        }
+        condition.notify_all();
+    }
+
+    static void HandleConnected(void * context, Messaging::ExchangeManager & exchangeManager, SessionHandle const & session)
+    {
+        auto * state = static_cast<CommandOperationState *>(context);
+        auto success = [state](app::ConcreteCommandPath const &, app::StatusIB const & status,
+                               typename Request::ResponseType const &) { state->Finish(status.ToChipError()); };
+        auto failure = [state](CHIP_ERROR error) { state->Finish(error); };
+        CHIP_ERROR error = InvokeCommandRequest(&exchangeManager, session, state->endpoint, state->request, success, failure);
+        if (error != CHIP_NO_ERROR)
+        {
+            state->Finish(error);
+        }
+    }
+
+    static void HandleConnectionFailure(void * context, ScopedNodeId const &, CHIP_ERROR error)
+    {
+        static_cast<CommandOperationState *>(context)->Finish(error);
+    }
+
+    EndpointId endpoint;
+    Request request;
+    std::mutex mutex;
+    std::condition_variable condition;
+    bool complete = false;
+    CHIP_ERROR error = CHIP_NO_ERROR;
+    chip::Callback::Callback<OnDeviceConnected> onConnected;
+    chip::Callback::Callback<OnDeviceConnectionFailure> onConnectionFailure;
+};
+
+template <typename AttributeType, typename Value>
+struct ReadOperationState
+{
+    using DecodableType = typename AttributeType::DecodableType;
+    using DecodableArgType = typename AttributeType::DecodableArgType;
+    using Converter = std::function<Value(DecodableArgType)>;
+
+    ReadOperationState(EndpointId requestedEndpoint, Converter valueConverter) :
+        endpoint(requestedEndpoint), converter(std::move(valueConverter)), onConnected(&HandleConnected, this),
+        onConnectionFailure(&HandleConnectionFailure, this)
+    {}
+
+    void Finish(CHIP_ERROR result)
+    {
+        {
+            std::scoped_lock lock(mutex);
+            if (complete)
+            {
+                return;
+            }
+            complete = true;
+            error    = result;
+        }
+        condition.notify_all();
+    }
+
+    static void HandleConnected(void * context, Messaging::ExchangeManager & exchangeManager, SessionHandle const & session)
+    {
+        auto * state = static_cast<ReadOperationState *>(context);
+        ClusterBase cluster(exchangeManager, session, state->endpoint);
+        CHIP_ERROR error = cluster.ReadAttribute<AttributeType>(
+            state,
+            [](void * callbackContext, DecodableArgType decoded) {
+                auto * operation = static_cast<ReadOperationState *>(callbackContext);
+                operation->value = operation->converter(decoded);
+                operation->Finish(CHIP_NO_ERROR);
+            },
+            [](void * callbackContext, CHIP_ERROR readError) {
+                static_cast<ReadOperationState *>(callbackContext)->Finish(readError);
+            });
+        if (error != CHIP_NO_ERROR)
+        {
+            state->Finish(error);
+        }
+    }
+
+    static void HandleConnectionFailure(void * context, ScopedNodeId const &, CHIP_ERROR error)
+    {
+        static_cast<ReadOperationState *>(context)->Finish(error);
+    }
+
+    EndpointId endpoint;
+    Converter converter;
+    Value value{};
+    std::mutex mutex;
+    std::condition_variable condition;
+    bool complete = false;
+    CHIP_ERROR error = CHIP_NO_ERROR;
+    chip::Callback::Callback<OnDeviceConnected> onConnected;
+    chip::Callback::Callback<OnDeviceConnectionFailure> onConnectionFailure;
+};
+
+class GenericReadState final : public app::ReadClient::Callback
+{
+public:
+    using ReportCallback =
+        std::function<void(app::ConcreteDataAttributePath const &, Windows::Foundation::Collections::IPropertySet const &)>;
+
+    GenericReadState(EndpointId endpoint, ClusterId cluster, AttributeId attribute, bool subscription,
+                     uint16_t minimumInterval, uint16_t maximumInterval, ReportCallback reportCallback = {}) :
+        mPath(endpoint, cluster, attribute), mSubscription(subscription), mMinimumInterval(minimumInterval),
+        mMaximumInterval(maximumInterval), mReportCallback(std::move(reportCallback)),
+        onConnected(&HandleConnected, this), onConnectionFailure(&HandleConnectionFailure, this)
+    {}
+
+    void OnAttributeData(app::ConcreteDataAttributePath const & path, TLV::TLVReader * data,
+                         app::StatusIB const & status) override
+    {
+        CHIP_ERROR error = status.ToChipError();
+        if (error != CHIP_NO_ERROR || data == nullptr)
+        {
+            Fail(error != CHIP_NO_ERROR ? error : CHIP_ERROR_INVALID_ARGUMENT);
+            return;
+        }
+        try
+        {
+            auto decoded = DecodePropertySetRoot(*data);
+            {
+                std::scoped_lock lock(mutex);
+                value      = decoded;
+                valueReady = true;
+            }
+            if (mReportCallback)
+            {
+                mReportCallback(path, decoded);
+            }
+        }
+        catch (hresult_error const &)
+        {
+            Fail(CHIP_ERROR_DECODE_FAILED);
+        }
+        condition.notify_all();
+    }
+
+    void OnError(CHIP_ERROR error) override { Fail(error); }
+
+    void OnDone(app::ReadClient *) override
+    {
+        if (!mSubscription)
+        {
+            std::scoped_lock lock(mutex);
+            complete = true;
+            condition.notify_all();
+        }
+    }
+
+    void OnSubscriptionEstablished(SubscriptionId) override
+    {
+        {
+            std::scoped_lock lock(mutex);
+            established = true;
+        }
+        condition.notify_all();
+    }
+
+    void Fail(CHIP_ERROR error)
+    {
+        {
+            std::scoped_lock lock(mutex);
+            if (closed)
+            {
+                return;
+            }
+            result   = error;
+            complete = true;
+        }
+        condition.notify_all();
+    }
+
+    void Close()
+    {
+        PlatformMgr().LockChipStack();
+        client.reset();
+        PlatformMgr().UnlockChipStack();
+        {
+            std::scoped_lock lock(mutex);
+            closed   = true;
+            complete = true;
+        }
+        condition.notify_all();
+    }
+
+    static void HandleConnected(void * context, Messaging::ExchangeManager & exchangeManager, SessionHandle const & session)
+    {
+        auto * state = static_cast<GenericReadState *>(context);
+        state->client = Platform::MakeUnique<app::ReadClient>(
+            app::InteractionModelEngine::GetInstance(), &exchangeManager, *state,
+            state->mSubscription ? app::ReadClient::InteractionType::Subscribe : app::ReadClient::InteractionType::Read);
+        if (!state->client)
+        {
+            state->Fail(CHIP_ERROR_NO_MEMORY);
+            return;
+        }
+        app::ReadPrepareParams parameters(session);
+        parameters.mpAttributePathParamsList     = &state->mPath;
+        parameters.mAttributePathParamsListSize  = 1;
+        parameters.mIsFabricFiltered             = true;
+        parameters.mMinIntervalFloorSeconds      = state->mMinimumInterval;
+        parameters.mMaxIntervalCeilingSeconds    = state->mMaximumInterval;
+        CHIP_ERROR error = state->client->SendRequest(parameters);
+        if (error != CHIP_NO_ERROR)
+        {
+            state->Fail(error);
+        }
+    }
+
+    static void HandleConnectionFailure(void * context, ScopedNodeId const &, CHIP_ERROR error)
+    {
+        static_cast<GenericReadState *>(context)->Fail(error);
+    }
+
+    std::mutex mutex;
+    std::condition_variable condition;
+    bool complete = false;
+    bool established = false;
+    bool valueReady = false;
+    bool closed = false;
+    CHIP_ERROR result = CHIP_NO_ERROR;
+    Windows::Foundation::Collections::IPropertySet value{ nullptr };
+    chip::Callback::Callback<OnDeviceConnected> onConnected;
+    chip::Callback::Callback<OnDeviceConnectionFailure> onConnectionFailure;
+
+private:
+    app::AttributePathParams mPath;
+    bool mSubscription;
+    uint16_t mMinimumInterval;
+    uint16_t mMaximumInterval;
+    ReportCallback mReportCallback;
+    Platform::UniquePtr<app::ReadClient> client;
+};
+
+class GenericWriteState final : public app::WriteClient::Callback
+{
+public:
+    GenericWriteState(EndpointId endpoint, ClusterId cluster, AttributeId attribute, std::vector<uint8_t> encoded) :
+        mPath(endpoint, cluster, attribute), mEncoded(std::move(encoded)), onConnected(&HandleConnected, this),
+        onConnectionFailure(&HandleConnectionFailure, this)
+    {}
+
+    void OnResponse(app::WriteClient const *, app::ConcreteDataAttributePath const &, app::StatusIB status) override
+    {
+        CHIP_ERROR error = status.ToChipError();
+        if (error != CHIP_NO_ERROR)
+        {
+            result = error;
+        }
+    }
+
+    void OnError(app::WriteClient const *, CHIP_ERROR error) override { result = error; }
+
+    void OnDone(app::WriteClient *) override
+    {
+        {
+            std::scoped_lock lock(mutex);
+            complete = true;
+        }
+        condition.notify_all();
+    }
+
+    static void HandleConnected(void * context, Messaging::ExchangeManager & exchangeManager, SessionHandle const & session)
+    {
+        auto * state = static_cast<GenericWriteState *>(context);
+        state->client = Platform::MakeUnique<app::WriteClient>(&exchangeManager, state, NullOptional);
+        if (!state->client)
+        {
+            state->Finish(CHIP_ERROR_NO_MEMORY);
+            return;
+        }
+        TLV::TLVReader reader;
+        reader.Init(state->mEncoded.data(), state->mEncoded.size());
+        CHIP_ERROR error = reader.Next();
+        if (error == CHIP_NO_ERROR)
+        {
+            error = state->client->PutPreencodedAttribute(state->mPath, reader);
+        }
+        if (error == CHIP_NO_ERROR)
+        {
+            error = state->client->SendWriteRequest(session);
+        }
+        if (error != CHIP_NO_ERROR)
+        {
+            state->Finish(error);
+        }
+    }
+
+    static void HandleConnectionFailure(void * context, ScopedNodeId const &, CHIP_ERROR error)
+    {
+        static_cast<GenericWriteState *>(context)->Finish(error);
+    }
+
+    void Finish(CHIP_ERROR error)
+    {
+        {
+            std::scoped_lock lock(mutex);
+            result   = error;
+            complete = true;
+        }
+        condition.notify_all();
+    }
+
+    void ReleaseClient()
+    {
+        PlatformMgr().LockChipStack();
+        client.reset();
+        PlatformMgr().UnlockChipStack();
+    }
+
+    std::mutex mutex;
+    std::condition_variable condition;
+    bool complete = false;
+    CHIP_ERROR result = CHIP_NO_ERROR;
+    chip::Callback::Callback<OnDeviceConnected> onConnected;
+    chip::Callback::Callback<OnDeviceConnectionFailure> onConnectionFailure;
+
+private:
+    app::ConcreteDataAttributePath mPath;
+    std::vector<uint8_t> mEncoded;
+    Platform::UniquePtr<app::WriteClient> client;
+};
+
+class GenericInvokeState final : public app::CommandSender::Callback
+{
+public:
+    GenericInvokeState(EndpointId endpoint, ClusterId cluster, CommandId command, std::vector<uint8_t> encoded) :
+        mPath(endpoint, cluster, command, app::CommandPathFlags::kEndpointIdValid), mEncoded(std::move(encoded)),
+        onConnected(&HandleConnected, this), onConnectionFailure(&HandleConnectionFailure, this)
+    {}
+
+    void OnResponse(app::CommandSender *, app::ConcreteCommandPath const &, app::StatusIB const & status,
+                    TLV::TLVReader * data) override
+    {
+        CHIP_ERROR error = status.ToChipError();
+        if (error != CHIP_NO_ERROR)
+        {
+            result = error;
+            return;
+        }
+        if (data != nullptr)
+        {
+            try
+            {
+                value = DecodePropertySetRoot(*data);
+            }
+            catch (hresult_error const &)
+            {
+                result = CHIP_ERROR_DECODE_FAILED;
+            }
+        }
+        else
+        {
+            value = Windows::Foundation::Collections::PropertySet();
+        }
+    }
+
+    void OnError(app::CommandSender const *, CHIP_ERROR error) override { result = error; }
+
+    void OnDone(app::CommandSender *) override
+    {
+        {
+            std::scoped_lock lock(mutex);
+            complete = true;
+        }
+        condition.notify_all();
+    }
+
+    static void HandleConnected(void * context, Messaging::ExchangeManager & exchangeManager, SessionHandle const & session)
+    {
+        auto * state = static_cast<GenericInvokeState *>(context);
+        state->sender = Platform::MakeUnique<app::CommandSender>(state, &exchangeManager, false);
+        if (!state->sender)
+        {
+            state->Finish(CHIP_ERROR_NO_MEMORY);
+            return;
+        }
+        app::CommandSender::PrepareCommandParameters prepareParameters;
+        CHIP_ERROR error = state->sender->PrepareCommand(state->mPath, prepareParameters);
+        TLV::TLVWriter * writer = state->sender->GetCommandDataIBTLVWriter();
+        if (error == CHIP_NO_ERROR && writer == nullptr)
+        {
+            error = CHIP_ERROR_INCORRECT_STATE;
+        }
+        if (error == CHIP_NO_ERROR)
+        {
+            TLV::TLVReader reader;
+            reader.Init(state->mEncoded.data(), state->mEncoded.size());
+            error = reader.Next();
+            if (error == CHIP_NO_ERROR)
+            {
+                error = writer->CopyContainer(TLV::ContextTag(app::CommandDataIB::Tag::kFields), reader);
+            }
+        }
+        if (error == CHIP_NO_ERROR)
+        {
+            app::CommandSender::FinishCommandParameters finishParameters;
+            error = state->sender->FinishCommand(finishParameters);
+        }
+        if (error == CHIP_NO_ERROR)
+        {
+            error = state->sender->SendCommandRequest(session);
+        }
+        if (error != CHIP_NO_ERROR)
+        {
+            state->Finish(error);
+        }
+    }
+
+    static void HandleConnectionFailure(void * context, ScopedNodeId const &, CHIP_ERROR error)
+    {
+        static_cast<GenericInvokeState *>(context)->Finish(error);
+    }
+
+    void Finish(CHIP_ERROR error)
+    {
+        {
+            std::scoped_lock lock(mutex);
+            result   = error;
+            complete = true;
+        }
+        condition.notify_all();
+    }
+
+    void ReleaseSender()
+    {
+        PlatformMgr().LockChipStack();
+        sender.reset();
+        PlatformMgr().UnlockChipStack();
+    }
+
+    std::mutex mutex;
+    std::condition_variable condition;
+    bool complete = false;
+    CHIP_ERROR result = CHIP_NO_ERROR;
+    Windows::Foundation::Collections::IPropertySet value{ nullptr };
+    chip::Callback::Callback<OnDeviceConnected> onConnected;
+    chip::Callback::Callback<OnDeviceConnectionFailure> onConnectionFailure;
+
+private:
+    app::CommandPathParams mPath;
+    std::vector<uint8_t> mEncoded;
+    Platform::UniquePtr<app::CommandSender> sender;
+};
+
+std::string GenerateSetupCode(uint32_t pinCode, uint16_t discriminator)
+{
+    SetupPayload payload;
+    payload.setUpPINCode = pinCode;
+    payload.discriminator.SetLongValue(discriminator);
+    std::string setupCode;
+    CheckChipError(ManualSetupPayloadGenerator(payload).payloadDecimalStringRepresentation(setupCode),
+                   L"Generate manual setup code");
+    return setupCode;
+}
+
+} // namespace
+
+class ControllerRuntime
+{
+public:
+    static std::shared_ptr<ControllerRuntime> Create(Controller::ControllerOptions const & options)
+    {
+        if (options == nullptr || options.StoragePath().empty())
+        {
+            throw hresult_invalid_argument(L"ControllerOptions.StoragePath is required.");
+        }
+
+        std::scoped_lock lock(sMutex);
+        if (!sInstance.expired())
+        {
+            throw hresult_illegal_method_call(L"Only one MatterController may be active in a process.");
+        }
+
+        auto runtime = std::shared_ptr<ControllerRuntime>(new ControllerRuntime(options));
+        runtime->Initialize();
+        sInstance = runtime;
+        return runtime;
+    }
+
+    void Close()
+    {
+        std::scoped_lock lock(mMutex);
+        if (mClosed)
+        {
+            return;
+        }
+
+        for (auto const & weakSubscription : mSubscriptions)
+        {
+            if (auto subscription = weakSubscription.lock())
+            {
+                subscription->Close();
+            }
+        }
+        mSubscriptions.clear();
+        (void) PlatformMgr().StopEventLoopTask();
+        PlatformMgr().LockChipStack();
+        if (mCommissionerInitialized)
+        {
+            mCommissioner.Shutdown();
+            mCommissionerInitialized = false;
+        }
+        if (mFactoryInitialized)
+        {
+            DeviceControllerFactory::GetInstance().Shutdown();
+            mFactoryInitialized = false;
+        }
+        Credentials::SetGroupDataProvider(nullptr);
+        mGroupDataProvider.Finish();
+        mOpCertStore.Finish();
+        mOperationalKeystore.Finish();
+        PlatformMgr().UnlockChipStack();
+        Platform::MemoryShutdown();
+        mClosed = true;
+    }
+
+    uint16_t FabricIndex() const { return mCommissioner.GetFabricIndex(); }
+
+    Controller::CommissionedNode Commission(uint64_t nodeId, uint32_t pinCode, uint16_t discriminator, bool useBle,
+                                            std::string const & providedSetupCode = {})
+    {
+        std::scoped_lock operationLock(mOperationMutex);
+        mPairingDelegate.Reset();
+        std::string setupCode = providedSetupCode.empty() ? GenerateSetupCode(pinCode, discriminator) : providedSetupCode;
+
+        CommissioningParameters parameters;
+        parameters.SetDeviceAttestationDelegate(&mPairingDelegate);
+        PlatformMgr().LockChipStack();
+        CHIP_ERROR error = mCommissioner.PairDevice(
+            nodeId, setupCode.c_str(), parameters, useBle ? DiscoveryType::kDiscoveryBleOnly : DiscoveryType::kDiscoveryNetworkOnly);
+        PlatformMgr().UnlockChipStack();
+        CheckChipError(error, L"Start commissioning");
+
+        std::unique_lock lock(mPairingState.mutex);
+        if (!mPairingState.condition.wait_for(lock, kCommissioningTimeout, [this]() { return mPairingState.complete; }))
+        {
+            lock.unlock();
+            PlatformMgr().LockChipStack();
+            (void) mCommissioner.StopPairing(nodeId);
+            PlatformMgr().UnlockChipStack();
+            throw hresult_error(HRESULT_FROM_WIN32(ERROR_TIMEOUT), L"Matter commissioning timed out.");
+        }
+        CheckChipError(mPairingState.error, L"Commission device");
+        if (std::find(mCommissionedNodes.begin(), mCommissionedNodes.end(), nodeId) == mCommissionedNodes.end())
+        {
+            mCommissionedNodes.push_back(nodeId);
+            PersistCommissionedNodes();
+        }
+        return winrt::make<implementation::CommissionedNode>(nodeId, FabricIndex());
+    }
+
+    std::vector<uint64_t> CommissionedNodes()
+    {
+        std::scoped_lock lock(mOperationMutex);
+        return mCommissionedNodes;
+    }
+
+    void RemoveNode(uint64_t nodeId)
+    {
+        std::scoped_lock lock(mOperationMutex);
+        PlatformMgr().LockChipStack();
+        CHIP_ERROR error = mCommissioner.UnpairDevice(nodeId);
+        PlatformMgr().UnlockChipStack();
+        CheckChipError(error, L"Start removing Matter node");
+        mCommissionedNodes.erase(std::remove(mCommissionedNodes.begin(), mCommissionedNodes.end(), nodeId),
+                                 mCommissionedNodes.end());
+        PersistCommissionedNodes();
+    }
+
+    bool RunOnOff(uint64_t nodeId, uint16_t endpointId, OnOffOperation operation)
+    {
+        if (operation == OnOffOperation::Read)
+        {
+            return PropertySetScalar<bool>(
+                ReadAttribute(nodeId, endpointId, app::Clusters::OnOff::Id, app::Clusters::OnOff::Attributes::OnOff::Id),
+                L"OnOff");
+        }
+
+        CommandId commandId;
+        switch (operation)
+        {
+        case OnOffOperation::On:
+            commandId = app::Clusters::OnOff::Commands::On::Id;
+            break;
+        case OnOffOperation::Off:
+            commandId = app::Clusters::OnOff::Commands::Off::Id;
+            break;
+        case OnOffOperation::Toggle:
+            commandId = app::Clusters::OnOff::Commands::Toggle::Id;
+            break;
+        default:
+            throw hresult_invalid_argument(L"Unsupported On/Off operation.");
+        }
+        InvokeCommand(nodeId, endpointId, app::Clusters::OnOff::Id, commandId,
+                      Windows::Foundation::Collections::PropertySet());
+        return false;
+    }
+
+    template <typename Request>
+    void Invoke(uint64_t nodeId, uint16_t endpointId, Request request)
+    {
+        std::scoped_lock operationLock(mOperationMutex);
+        CommandOperationState<Request> state(endpointId, std::move(request));
+        PlatformMgr().LockChipStack();
+        CHIP_ERROR error = mCommissioner.GetConnectedDevice(nodeId, &state.onConnected, &state.onConnectionFailure);
+        PlatformMgr().UnlockChipStack();
+        CheckChipError(error, L"Start CASE session");
+
+        std::unique_lock lock(state.mutex);
+        if (!state.condition.wait_for(lock, kInteractionTimeout, [&state]() { return state.complete; }))
+        {
+            throw hresult_error(HRESULT_FROM_WIN32(ERROR_TIMEOUT), L"Matter command timed out.");
+        }
+        CheckChipError(state.error, L"Invoke Matter command");
+    }
+
+    template <typename AttributeType, typename Value>
+    Value Read(uint64_t nodeId, uint16_t endpointId,
+               typename ReadOperationState<AttributeType, Value>::Converter converter)
+    {
+        std::scoped_lock operationLock(mOperationMutex);
+        ReadOperationState<AttributeType, Value> state(endpointId, std::move(converter));
+        PlatformMgr().LockChipStack();
+        CHIP_ERROR error = mCommissioner.GetConnectedDevice(nodeId, &state.onConnected, &state.onConnectionFailure);
+        PlatformMgr().UnlockChipStack();
+        CheckChipError(error, L"Start CASE session");
+
+        std::unique_lock lock(state.mutex);
+        if (!state.condition.wait_for(lock, kInteractionTimeout, [&state]() { return state.complete; }))
+        {
+            throw hresult_error(HRESULT_FROM_WIN32(ERROR_TIMEOUT), L"Matter attribute read timed out.");
+        }
+        CheckChipError(state.error, L"Read Matter attribute");
+        return std::move(state.value);
+    }
+
+    Windows::Foundation::Collections::IPropertySet ReadAttribute(uint64_t nodeId, EndpointId endpointId, ClusterId clusterId,
+                                                                  AttributeId attributeId)
+    {
+        std::scoped_lock operationLock(mOperationMutex);
+        auto state = std::make_shared<GenericReadState>(endpointId, clusterId, attributeId, false, 0, 0);
+        StartConnectedOperation(nodeId, state->onConnected, state->onConnectionFailure);
+        std::unique_lock lock(state->mutex);
+        if (!state->condition.wait_for(lock, kInteractionTimeout, [&state]() { return state->complete; }))
+        {
+            lock.unlock();
+            state->Close();
+            throw hresult_error(HRESULT_FROM_WIN32(ERROR_TIMEOUT), L"Matter attribute read timed out.");
+        }
+        CHIP_ERROR result = state->result;
+        auto value        = state->value;
+        lock.unlock();
+        state->Close();
+        CheckChipError(result, L"Read Matter attribute");
+        if (!value)
+        {
+            throw hresult_error(E_FAIL, L"The Matter attribute read returned no value.");
+        }
+        return value;
+    }
+
+    void WriteAttribute(uint64_t nodeId, EndpointId endpointId, ClusterId clusterId, AttributeId attributeId,
+                        Windows::Foundation::Collections::IPropertySet const & value)
+    {
+        std::vector<uint8_t> encoded;
+        CheckChipError(EncodePropertySetRoot(value, encoded), L"Encode Matter attribute value");
+        std::scoped_lock operationLock(mOperationMutex);
+        GenericWriteState state(endpointId, clusterId, attributeId, std::move(encoded));
+        StartConnectedOperation(nodeId, state.onConnected, state.onConnectionFailure);
+        std::unique_lock lock(state.mutex);
+        if (!state.condition.wait_for(lock, kInteractionTimeout, [&state]() { return state.complete; }))
+        {
+            lock.unlock();
+            state.ReleaseClient();
+            throw hresult_error(HRESULT_FROM_WIN32(ERROR_TIMEOUT), L"Matter attribute write timed out.");
+        }
+        CHIP_ERROR result = state.result;
+        lock.unlock();
+        state.ReleaseClient();
+        CheckChipError(result, L"Write Matter attribute");
+    }
+
+    Windows::Foundation::Collections::IPropertySet InvokeCommand(uint64_t nodeId, EndpointId endpointId, ClusterId clusterId,
+                                                                  CommandId commandId,
+                                                                  Windows::Foundation::Collections::IPropertySet const & arguments)
+    {
+        std::vector<uint8_t> encoded;
+        CheckChipError(EncodePropertySetRoot(arguments, encoded), L"Encode Matter command arguments");
+        std::scoped_lock operationLock(mOperationMutex);
+        GenericInvokeState state(endpointId, clusterId, commandId, std::move(encoded));
+        StartConnectedOperation(nodeId, state.onConnected, state.onConnectionFailure);
+        std::unique_lock lock(state.mutex);
+        if (!state.condition.wait_for(lock, kInteractionTimeout, [&state]() { return state.complete; }))
+        {
+            lock.unlock();
+            state.ReleaseSender();
+            throw hresult_error(HRESULT_FROM_WIN32(ERROR_TIMEOUT), L"Matter command timed out.");
+        }
+        CHIP_ERROR result = state.result;
+        auto value        = state.value;
+        lock.unlock();
+        state.ReleaseSender();
+        CheckChipError(result, L"Invoke Matter command");
+        return value ? value : Windows::Foundation::Collections::PropertySet();
+    }
+
+    Controller::AttributeSubscription SubscribeAttribute(uint64_t nodeId, EndpointId endpointId, ClusterId clusterId,
+                                                          AttributeId attributeId, uint16_t minimumInterval,
+                                                          uint16_t maximumInterval)
+    {
+        if (minimumInterval > maximumInterval)
+        {
+            throw hresult_invalid_argument(L"The minimum subscription interval cannot exceed the maximum interval.");
+        }
+        std::scoped_lock operationLock(mOperationMutex);
+        auto projectedWeak = std::make_shared<winrt::weak_ref<Controller::AttributeSubscription>>();
+        auto state         = std::make_shared<GenericReadState>(
+            endpointId, clusterId, attributeId, true, minimumInterval, maximumInterval,
+            [projectedWeak](app::ConcreteDataAttributePath const & path,
+                            Windows::Foundation::Collections::IPropertySet const & data) {
+                if (auto subscription = projectedWeak->get())
+                {
+                    auto projectedPath =
+                        winrt::make<implementation::AttributePath>(path.mEndpointId, path.mClusterId, path.mAttributeId);
+                    auto value = winrt::make<implementation::AttributeValue>(projectedPath, data);
+                    auto args  = winrt::make<implementation::AttributeReportEventArgs>(value);
+                    winrt::get_self<implementation::AttributeSubscription>(subscription)->Publish(args);
+                }
+            });
+        auto subscription = winrt::make<implementation::AttributeSubscription>([state]() { state->Close(); });
+        *projectedWeak     = winrt::make_weak(subscription);
+        StartConnectedOperation(nodeId, state->onConnected, state->onConnectionFailure);
+
+        std::unique_lock lock(state->mutex);
+        if (!state->condition.wait_for(lock, kInteractionTimeout,
+                                       [&state]() { return state->established || state->complete; }))
+        {
+            lock.unlock();
+            state->Close();
+            throw hresult_error(HRESULT_FROM_WIN32(ERROR_TIMEOUT), L"Matter subscription timed out.");
+        }
+        CHIP_ERROR result = state->result;
+        bool established  = state->established;
+        lock.unlock();
+        CheckChipError(result, L"Subscribe to Matter attribute");
+        if (!established)
+        {
+            state->Close();
+            throw hresult_error(E_FAIL, L"The Matter subscription ended before it was established.");
+        }
+        mSubscriptions.push_back(state);
+        return subscription;
+    }
+
+private:
+    explicit ControllerRuntime(Controller::ControllerOptions const & options) :
+        mStoragePath(options.StoragePath()), mControllerNodeId(options.ControllerNodeId()),
+        mBluetoothAdapterId(options.BluetoothAdapterId()), mAllowTestAttestation(options.AllowTestAttestation()),
+        mGroupDataProvider(50, 25), mPairingDelegate(mPairingState, mAllowTestAttestation)
+    {}
+
+    void Initialize()
+    {
+        std::filesystem::path storagePath(mStoragePath.c_str());
+        if (!storagePath.is_absolute())
+        {
+            throw hresult_invalid_argument(L"ControllerOptions.StoragePath must be absolute.");
+        }
+
+        std::filesystem::create_directories(storagePath);
+        std::string storageUtf8 = to_string(mStoragePath);
+
+        CheckChipError(Platform::MemoryInit(), L"Initialize Matter memory");
+        CheckChipError(DeviceLayer::Internal::BLEMgrImpl().ConfigureBle(mBluetoothAdapterId, true), L"Configure Bluetooth LE");
+        CheckChipError(ConfigurationManagerImpl::GetDefaultInstance().ConfigureStorageRoot(storageUtf8.c_str()),
+                       L"Configure controller storage");
+        CheckChipError(PlatformMgr().InitChipStack(), L"Initialize Matter platform");
+        CheckChipError(PlatformMgr().StartEventLoopTask(), L"Start Matter event loop");
+
+        PlatformMgr().LockChipStack();
+        CHIP_ERROR error = InitializeController();
+        PlatformMgr().UnlockChipStack();
+        if (error != CHIP_NO_ERROR)
+        {
+            Close();
+            ThrowChipError(error, L"Initialize Matter controller");
+        }
+    }
+
+    void StartConnectedOperation(uint64_t nodeId, chip::Callback::Callback<OnDeviceConnected> & onConnected,
+                                 chip::Callback::Callback<OnDeviceConnectionFailure> & onConnectionFailure)
+    {
+        PlatformMgr().LockChipStack();
+        CHIP_ERROR error = mCommissioner.GetConnectedDevice(nodeId, &onConnected, &onConnectionFailure);
+        PlatformMgr().UnlockChipStack();
+        CheckChipError(error, L"Start CASE session");
+    }
+
+    CHIP_ERROR InitializeController()
+    {
+        ReturnErrorOnFailure(mStorage.Init(&PersistedStorage::KeyValueStoreMgr()));
+        LoadCommissionedNodes();
+        ReturnErrorOnFailure(mOperationalKeystore.Init(&mStorage));
+        ReturnErrorOnFailure(mOpCertStore.Init(&mStorage));
+
+        mGroupDataProvider.SetStorageDelegate(&mStorage);
+        mGroupDataProvider.SetSessionKeystore(&mSessionKeystore);
+        ReturnErrorOnFailure(mGroupDataProvider.Init());
+        Credentials::SetGroupDataProvider(&mGroupDataProvider);
+
+        FactoryInitParams factoryParameters;
+        factoryParameters.fabricIndependentStorage = &mStorage;
+        factoryParameters.operationalKeystore      = &mOperationalKeystore;
+        factoryParameters.opCertStore              = &mOpCertStore;
+        factoryParameters.sessionKeystore          = &mSessionKeystore;
+        factoryParameters.groupDataProvider        = &mGroupDataProvider;
+        factoryParameters.dataModelProvider        = &mDataModelProvider;
+        ReturnErrorOnFailure(DeviceControllerFactory::GetInstance().Init(factoryParameters));
+        mFactoryInitialized = true;
+
+#pragma warning(suppress : 4996)
+        ReturnErrorOnFailure(mCredentialsIssuer.Initialize(mStorage));
+        SetupParams commissionerParameters;
+        commissionerParameters.operationalCredentialsDelegate = &mCredentialsIssuer;
+        commissionerParameters.controllerVendorId             = VendorId::TestVendor1;
+        commissionerParameters.pairingDelegate                 = &mPairingDelegate;
+        commissionerParameters.deviceAttestationVerifier =
+            Credentials::GetDefaultDACVerifier(Credentials::GetTestAttestationTrustStore(), nullptr);
+
+        FabricTable * fabrics = DeviceControllerFactory::GetInstance().GetSystemState()->Fabrics();
+        VerifyOrReturnError(fabrics != nullptr, CHIP_ERROR_INCORRECT_STATE);
+        bool restored = false;
+        if (fabrics->FabricCount() > 0)
+        {
+            chip::FabricIndex fabricIndex = fabrics->begin()->GetFabricIndex();
+            if (fabrics->HasOperationalKeyForFabric(fabricIndex))
+            {
+                commissionerParameters.fabricIndex.SetValue(fabricIndex);
+                restored = true;
+            }
+            else
+            {
+                ReturnErrorOnFailure(fabrics->Delete(fabricIndex));
+            }
+        }
+
+        if (!restored)
+        {
+            uint8_t csrBuffer[Crypto::kMIN_CSR_Buffer_Size];
+            uint8_t nocBuffer[kMaxCHIPDERCertLength];
+            uint8_t icacBuffer[kMaxCHIPDERCertLength];
+            uint8_t rcacBuffer[kMaxCHIPDERCertLength];
+            MutableByteSpan csr(csrBuffer);
+            MutableByteSpan noc(nocBuffer);
+            MutableByteSpan icac(icacBuffer);
+            MutableByteSpan rcac(rcacBuffer);
+            Crypto::P256PublicKey operationalPublicKey;
+
+            ReturnErrorOnFailure(fabrics->AllocatePendingOperationalKey(NullOptional, csr));
+            ReturnErrorOnFailure(Crypto::VerifyCertificateSigningRequest(csr.data(), csr.size(), operationalPublicKey));
+            ReturnErrorOnFailure(mCredentialsIssuer.GenerateNOCChainAfterValidation(
+                mControllerNodeId, kControllerFabricId, kUndefinedCATs, operationalPublicKey, rcac, icac, noc));
+            commissionerParameters.controllerRCAC = rcac;
+            commissionerParameters.controllerICAC = icac;
+            commissionerParameters.controllerNOC  = noc;
+        }
+
+        ReturnErrorOnFailure(DeviceControllerFactory::GetInstance().SetupCommissioner(commissionerParameters, mCommissioner));
+        mCommissionerInitialized = true;
+
+        uint8_t compressedFabricId[sizeof(uint64_t)];
+        MutableByteSpan compressedFabricIdSpan(compressedFabricId);
+        ReturnErrorOnFailure(mCommissioner.GetCompressedFabricIdBytes(compressedFabricIdSpan));
+        return Credentials::SetSingleIpkEpochKey(&mGroupDataProvider, mCommissioner.GetFabricIndex(),
+                                                 GroupTesting::DefaultIpkValue::GetDefaultIpk(), compressedFabricIdSpan);
+    }
+
+    void LoadCommissionedNodes()
+    {
+        uint16_t size = 0;
+        CHIP_ERROR error = mStorage.SyncGetKeyValue(kCommissionedNodesKey, nullptr, size);
+        if (error == CHIP_ERROR_PERSISTED_STORAGE_VALUE_NOT_FOUND)
+        {
+            return;
+        }
+        CheckChipError(error == CHIP_ERROR_BUFFER_TOO_SMALL ? CHIP_NO_ERROR : error, L"Read commissioned node index");
+        if (size == 0 || size % sizeof(uint64_t) != 0)
+        {
+            return;
+        }
+        mCommissionedNodes.resize(size / sizeof(uint64_t));
+        CheckChipError(mStorage.SyncGetKeyValue(kCommissionedNodesKey, mCommissionedNodes.data(), size),
+                       L"Read commissioned node index");
+    }
+
+    void PersistCommissionedNodes()
+    {
+        if (mCommissionedNodes.empty())
+        {
+            CHIP_ERROR error = mStorage.SyncDeleteKeyValue(kCommissionedNodesKey);
+            if (error != CHIP_ERROR_PERSISTED_STORAGE_VALUE_NOT_FOUND)
+            {
+                CheckChipError(error, L"Delete commissioned node index");
+            }
+            return;
+        }
+        size_t byteCount = mCommissionedNodes.size() * sizeof(uint64_t);
+        if (byteCount > UINT16_MAX)
+        {
+            throw hresult_error(E_BOUNDS, L"Too many commissioned nodes are stored.");
+        }
+        CheckChipError(mStorage.SyncSetKeyValue(kCommissionedNodesKey, mCommissionedNodes.data(), static_cast<uint16_t>(byteCount)),
+                       L"Write commissioned node index");
+    }
+
+    static std::mutex sMutex;
+    static std::weak_ptr<ControllerRuntime> sInstance;
+
+    std::mutex mMutex;
+    std::mutex mOperationMutex;
+    hstring mStoragePath;
+    uint64_t mControllerNodeId;
+    uint32_t mBluetoothAdapterId;
+    bool mAllowTestAttestation;
+    bool mClosed = false;
+    KvsPersistentStorageDelegate mStorage;
+    PersistentStorageOperationalKeystore mOperationalKeystore;
+    Credentials::PersistentStorageOpCertStore mOpCertStore;
+    Crypto::RawKeySessionKeystore mSessionKeystore;
+    Credentials::GroupDataProviderImpl mGroupDataProvider;
+    ExampleOperationalCredentialsIssuer mCredentialsIssuer;
+    Testing::EmptyProvider mDataModelProvider;
+    DeviceCommissioner mCommissioner;
+    PairingState mPairingState;
+    PairingDelegate mPairingDelegate;
+    bool mFactoryInitialized = false;
+    bool mCommissionerInitialized = false;
+    std::vector<uint64_t> mCommissionedNodes;
+    std::vector<std::weak_ptr<GenericReadState>> mSubscriptions;
+};
+
+std::mutex ControllerRuntime::sMutex;
+std::weak_ptr<ControllerRuntime> ControllerRuntime::sInstance;
+
+hstring ControllerOptions::StoragePath() const
+{
+    return mStoragePath;
+}
+
+void ControllerOptions::StoragePath(hstring const & value)
+{
+    mStoragePath = value;
+}
+
+uint64_t ControllerOptions::ControllerNodeId() const
+{
+    return mControllerNodeId;
+}
+
+void ControllerOptions::ControllerNodeId(uint64_t value)
+{
+    mControllerNodeId = value;
+}
+
+uint32_t ControllerOptions::BluetoothAdapterId() const
+{
+    return mBluetoothAdapterId;
+}
+
+void ControllerOptions::BluetoothAdapterId(uint32_t value)
+{
+    mBluetoothAdapterId = value;
+}
+
+bool ControllerOptions::AllowTestAttestation() const
+{
+    return mAllowTestAttestation;
+}
+
+void ControllerOptions::AllowTestAttestation(bool value)
+{
+    mAllowTestAttestation = value;
+}
+
+uint64_t OnNetworkCommissioningParameters::NodeId() const
+{
+    return mNodeId;
+}
+
+void OnNetworkCommissioningParameters::NodeId(uint64_t value)
+{
+    mNodeId = value;
+}
+
+hstring OnNetworkCommissioningParameters::SetupCode() const
+{
+    return mSetupCode;
+}
+
+void OnNetworkCommissioningParameters::SetupCode(hstring const & value)
+{
+    mSetupCode = value;
+}
+
+uint32_t OnNetworkCommissioningParameters::SetupPinCode() const
+{
+    return mSetupPinCode;
+}
+
+void OnNetworkCommissioningParameters::SetupPinCode(uint32_t value)
+{
+    mSetupPinCode = value;
+}
+
+uint16_t OnNetworkCommissioningParameters::LongDiscriminator() const
+{
+    return mLongDiscriminator;
+}
+
+void OnNetworkCommissioningParameters::LongDiscriminator(uint16_t value)
+{
+    mLongDiscriminator = value;
+}
+
+hstring OnNetworkCommissioningParameters::IpAddress() const
+{
+    return mIpAddress;
+}
+
+void OnNetworkCommissioningParameters::IpAddress(hstring const & value)
+{
+    mIpAddress = value;
+}
+
+uint64_t BleCommissioningParameters::NodeId() const
+{
+    return mNodeId;
+}
+
+void BleCommissioningParameters::NodeId(uint64_t value)
+{
+    mNodeId = value;
+}
+
+uint32_t BleCommissioningParameters::SetupPinCode() const
+{
+    return mSetupPinCode;
+}
+
+void BleCommissioningParameters::SetupPinCode(uint32_t value)
+{
+    mSetupPinCode = value;
+}
+
+uint16_t BleCommissioningParameters::LongDiscriminator() const
+{
+    return mLongDiscriminator;
+}
+
+void BleCommissioningParameters::LongDiscriminator(uint16_t value)
+{
+    mLongDiscriminator = value;
+}
+
+AttributePath::AttributePath(uint16_t endpointId, uint32_t clusterId, uint32_t attributeId) :
+    mEndpointId(endpointId), mClusterId(clusterId), mAttributeId(attributeId)
+{}
+
+uint16_t AttributePath::EndpointId() const
+{
+    return mEndpointId;
+}
+
+uint32_t AttributePath::ClusterId() const
+{
+    return mClusterId;
+}
+
+uint32_t AttributePath::AttributeId() const
+{
+    return mAttributeId;
+}
+
+CommandPath::CommandPath(uint16_t endpointId, uint32_t clusterId, uint32_t commandId) :
+    mEndpointId(endpointId), mClusterId(clusterId), mCommandId(commandId)
+{}
+
+uint16_t CommandPath::EndpointId() const
+{
+    return mEndpointId;
+}
+
+uint32_t CommandPath::ClusterId() const
+{
+    return mClusterId;
+}
+
+uint32_t CommandPath::CommandId() const
+{
+    return mCommandId;
+}
+
+CommissionedNode::CommissionedNode(uint64_t nodeId, uint16_t fabricIndex) : mNodeId(nodeId), mFabricIndex(fabricIndex) {}
+
+uint64_t CommissionedNode::NodeId() const
+{
+    return mNodeId;
+}
+
+uint16_t CommissionedNode::FabricIndex() const
+{
+    return mFabricIndex;
+}
+
+CommissioningProgressEventArgs::CommissioningProgressEventArgs(Controller::CommissioningStage stage, hstring message) :
+    mStage(stage), mMessage(std::move(message))
+{}
+
+Controller::CommissioningStage CommissioningProgressEventArgs::Stage() const
+{
+    return mStage;
+}
+
+hstring CommissioningProgressEventArgs::Message() const
+{
+    return mMessage;
+}
+
+AttributeValue::AttributeValue(Controller::AttributePath path, Windows::Foundation::Collections::IPropertySet data) :
+    mPath(std::move(path)), mData(std::move(data))
+{}
+
+Controller::AttributePath AttributeValue::Path() const
+{
+    return mPath;
+}
+
+Windows::Foundation::Collections::IPropertySet AttributeValue::Data() const
+{
+    return mData;
+}
+
+CommandResult::CommandResult(Controller::CommandPath path, Windows::Foundation::Collections::IPropertySet data) :
+    mPath(std::move(path)), mData(std::move(data))
+{}
+
+Controller::CommandPath CommandResult::Path() const
+{
+    return mPath;
+}
+
+Windows::Foundation::Collections::IPropertySet CommandResult::Data() const
+{
+    return mData;
+}
+
+AttributeReportEventArgs::AttributeReportEventArgs(Controller::AttributeValue value) : mValue(std::move(value)) {}
+
+Controller::AttributeValue AttributeReportEventArgs::Value() const
+{
+    return mValue;
+}
+
+AttributeSubscription::AttributeSubscription(std::function<void()> close) : mClose(std::move(close)) {}
+
+event_token AttributeSubscription::ReportReceived(
+    Windows::Foundation::TypedEventHandler<Controller::AttributeSubscription, Controller::AttributeReportEventArgs> const & handler)
+{
+    return mReportReceived.add(handler);
+}
+
+void AttributeSubscription::ReportReceived(event_token const & token) noexcept
+{
+    mReportReceived.remove(token);
+}
+
+Windows::Foundation::IAsyncAction AttributeSubscription::CloseAsync()
+{
+    co_await resume_background();
+    if (mClose)
+    {
+        mClose();
+        mClose = {};
+    }
+}
+
+void AttributeSubscription::Publish(Controller::AttributeReportEventArgs const & args)
+{
+    mReportReceived(*this, args);
+}
+
+BasicInformation::BasicInformation(uint16_t vendorId, hstring vendorName, uint16_t productId, hstring productName,
+                                   hstring nodeLabel, hstring serialNumber, uint32_t softwareVersion,
+                                   hstring softwareVersionString) :
+    mVendorId(vendorId), mVendorName(std::move(vendorName)), mProductId(productId), mProductName(std::move(productName)),
+    mNodeLabel(std::move(nodeLabel)), mSerialNumber(std::move(serialNumber)), mSoftwareVersion(softwareVersion),
+    mSoftwareVersionString(std::move(softwareVersionString))
+{}
+
+uint16_t BasicInformation::VendorId() const
+{
+    return mVendorId;
+}
+
+hstring BasicInformation::VendorName() const
+{
+    return mVendorName;
+}
+
+uint16_t BasicInformation::ProductId() const
+{
+    return mProductId;
+}
+
+hstring BasicInformation::ProductName() const
+{
+    return mProductName;
+}
+
+hstring BasicInformation::NodeLabel() const
+{
+    return mNodeLabel;
+}
+
+hstring BasicInformation::SerialNumber() const
+{
+    return mSerialNumber;
+}
+
+uint32_t BasicInformation::SoftwareVersion() const
+{
+    return mSoftwareVersion;
+}
+
+hstring BasicInformation::SoftwareVersionString() const
+{
+    return mSoftwareVersionString;
+}
+
+OnOffCluster::OnOffCluster(std::shared_ptr<ControllerRuntime> runtime, uint64_t nodeId, uint16_t endpointId) :
+    mRuntime(std::move(runtime)), mNodeId(nodeId), mEndpointId(endpointId)
+{}
+
+Windows::Foundation::IAsyncOperation<bool> OnOffCluster::ReadAsync()
+{
+    co_await resume_background();
+    co_return mRuntime->RunOnOff(mNodeId, mEndpointId, OnOffOperation::Read);
+}
+
+Windows::Foundation::IAsyncAction OnOffCluster::SetAsync(bool value)
+{
+    co_await resume_background();
+    mRuntime->RunOnOff(mNodeId, mEndpointId, value ? OnOffOperation::On : OnOffOperation::Off);
+}
+
+Windows::Foundation::IAsyncAction OnOffCluster::OnAsync()
+{
+    co_await resume_background();
+    mRuntime->RunOnOff(mNodeId, mEndpointId, OnOffOperation::On);
+}
+
+Windows::Foundation::IAsyncAction OnOffCluster::OffAsync()
+{
+    co_await resume_background();
+    mRuntime->RunOnOff(mNodeId, mEndpointId, OnOffOperation::Off);
+}
+
+Windows::Foundation::IAsyncAction OnOffCluster::ToggleAsync()
+{
+    co_await resume_background();
+    mRuntime->RunOnOff(mNodeId, mEndpointId, OnOffOperation::Toggle);
+}
+
+Windows::Foundation::IAsyncOperation<Controller::AttributeSubscription>
+OnOffCluster::SubscribeAsync(uint16_t minimumIntervalSeconds, uint16_t maximumIntervalSeconds)
+{
+    co_await resume_background();
+    co_return mRuntime->SubscribeAttribute(mNodeId, mEndpointId, app::Clusters::OnOff::Id,
+                                           app::Clusters::OnOff::Attributes::OnOff::Id, minimumIntervalSeconds,
+                                           maximumIntervalSeconds);
+}
+
+LevelControlCluster::LevelControlCluster(std::shared_ptr<ControllerRuntime> runtime, uint64_t nodeId, uint16_t endpointId) :
+    mRuntime(std::move(runtime)), mNodeId(nodeId), mEndpointId(endpointId)
+{}
+
+Windows::Foundation::IAsyncOperation<uint8_t> LevelControlCluster::ReadCurrentLevelAsync()
+{
+    co_await resume_background();
+    co_return PropertySetScalar<uint8_t>(
+        mRuntime->ReadAttribute(mNodeId, mEndpointId, app::Clusters::LevelControl::Id,
+                                app::Clusters::LevelControl::Attributes::CurrentLevel::Id),
+        L"CurrentLevel");
+}
+
+Windows::Foundation::IAsyncAction LevelControlCluster::MoveToLevelAsync(uint8_t level, uint16_t transitionTime,
+                                                                       uint8_t optionsMask, uint8_t optionsOverride)
+{
+    co_await resume_background();
+    Windows::Foundation::Collections::PropertySet arguments;
+    arguments.Insert(L"0", box_value(level));
+    arguments.Insert(L"1", box_value(transitionTime));
+    arguments.Insert(L"2", box_value(optionsMask));
+    arguments.Insert(L"3", box_value(optionsOverride));
+    mRuntime->InvokeCommand(mNodeId, mEndpointId, app::Clusters::LevelControl::Id,
+                            app::Clusters::LevelControl::Commands::MoveToLevel::Id, arguments);
+}
+
+Windows::Foundation::IAsyncOperation<Controller::AttributeSubscription>
+LevelControlCluster::SubscribeAsync(uint16_t minimumIntervalSeconds, uint16_t maximumIntervalSeconds)
+{
+    co_await resume_background();
+    co_return mRuntime->SubscribeAttribute(mNodeId, mEndpointId, app::Clusters::LevelControl::Id,
+                                           app::Clusters::LevelControl::Attributes::CurrentLevel::Id, minimumIntervalSeconds,
+                                           maximumIntervalSeconds);
+}
+
+BasicInformationCluster::BasicInformationCluster(std::shared_ptr<ControllerRuntime> runtime, uint64_t nodeId, uint16_t endpointId) :
+    mRuntime(std::move(runtime)), mNodeId(nodeId), mEndpointId(endpointId)
+{}
+
+Windows::Foundation::IAsyncOperation<Controller::BasicInformation> BasicInformationCluster::ReadAsync()
+{
+    co_await resume_background();
+    using namespace app::Clusters::BasicInformation::Attributes;
+    auto readValue = [this](AttributeId attributeId) {
+        return mRuntime->ReadAttribute(mNodeId, mEndpointId, app::Clusters::BasicInformation::Id, attributeId);
+    };
+    uint16_t vendorId  = PropertySetScalar<uint16_t>(readValue(VendorID::Id), L"VendorID");
+    hstring vendorName = PropertySetScalar<hstring>(readValue(VendorName::Id), L"VendorName");
+    uint16_t productId = PropertySetScalar<uint16_t>(readValue(ProductID::Id), L"ProductID");
+    hstring productName = PropertySetScalar<hstring>(readValue(ProductName::Id), L"ProductName");
+    hstring nodeLabel   = PropertySetScalar<hstring>(readValue(NodeLabel::Id), L"NodeLabel");
+    hstring serialNumber;
+    try
+    {
+        serialNumber = PropertySetScalar<hstring>(readValue(SerialNumber::Id), L"SerialNumber");
+    }
+    catch (hresult_error const & error)
+    {
+        if (to_string(error.message()).find("UNSUPPORTED_ATTRIBUTE") == std::string::npos)
+        {
+            throw;
+        }
+    }
+    uint32_t softwareVersion = PropertySetScalar<uint32_t>(readValue(SoftwareVersion::Id), L"SoftwareVersion");
+    hstring softwareVersionString =
+        PropertySetScalar<hstring>(readValue(SoftwareVersionString::Id), L"SoftwareVersionString");
+    co_return winrt::make<implementation::BasicInformation>(vendorId, vendorName, productId, productName, nodeLabel, serialNumber,
+                                                            softwareVersion, softwareVersionString);
+}
+
+MatterController::MatterController(std::shared_ptr<ControllerRuntime> runtime) : mRuntime(std::move(runtime)) {}
+
+Windows::Foundation::IAsyncOperation<Controller::MatterController>
+MatterController::CreateAsync(Controller::ControllerOptions options)
+{
+    co_await resume_background();
+    co_return winrt::make<MatterController>(ControllerRuntime::Create(options));
+}
+
+event_token MatterController::CommissioningProgress(
+    Windows::Foundation::TypedEventHandler<Controller::MatterController, Controller::CommissioningProgressEventArgs> const & handler)
+{
+    return mCommissioningProgress.add(handler);
+}
+
+void MatterController::CommissioningProgress(event_token const & token) noexcept
+{
+    mCommissioningProgress.remove(token);
+}
+
+Windows::Foundation::IAsyncOperation<Controller::CommissionedNode>
+MatterController::CommissionOnNetworkAsync(Controller::OnNetworkCommissioningParameters parameters)
+{
+    if (!parameters)
+    {
+        throw hresult_invalid_argument(L"parameters cannot be null.");
+    }
+    auto progress = winrt::make<implementation::CommissioningProgressEventArgs>(Controller::CommissioningStage::Discovering,
+                                                                                L"Starting on-network commissioning");
+    mCommissioningProgress(*this, progress);
+    co_await resume_background();
+    auto node = mRuntime->Commission(parameters.NodeId(), parameters.SetupPinCode(), parameters.LongDiscriminator(), false,
+                                     to_string(parameters.SetupCode()));
+    progress = winrt::make<implementation::CommissioningProgressEventArgs>(Controller::CommissioningStage::Complete,
+                                                                           L"Commissioning complete");
+    mCommissioningProgress(*this, progress);
+    co_return node;
+}
+
+Windows::Foundation::IAsyncOperation<Controller::CommissionedNode>
+MatterController::CommissionBleAsync(Controller::BleCommissioningParameters parameters)
+{
+    if (!parameters)
+    {
+        throw hresult_invalid_argument(L"parameters cannot be null.");
+    }
+    auto progress = winrt::make<implementation::CommissioningProgressEventArgs>(Controller::CommissioningStage::Discovering,
+                                                                                L"Starting BLE commissioning");
+    mCommissioningProgress(*this, progress);
+    co_await resume_background();
+    auto node = mRuntime->Commission(parameters.NodeId(), parameters.SetupPinCode(), parameters.LongDiscriminator(), true);
+    progress = winrt::make<implementation::CommissioningProgressEventArgs>(Controller::CommissioningStage::Complete,
+                                                                           L"Commissioning complete");
+    mCommissioningProgress(*this, progress);
+    co_return node;
+}
+
+Windows::Foundation::Collections::IVectorView<Controller::CommissionedNode> MatterController::CommissionedNodes()
+{
+    std::vector<Controller::CommissionedNode> nodes;
+    for (uint64_t nodeId : mRuntime->CommissionedNodes())
+    {
+        nodes.push_back(winrt::make<implementation::CommissionedNode>(nodeId, mRuntime->FabricIndex()));
+    }
+    return single_threaded_vector(std::move(nodes)).GetView();
+}
+
+Windows::Foundation::IAsyncAction MatterController::RemoveNodeAsync(uint64_t nodeId)
+{
+    co_await resume_background();
+    mRuntime->RemoveNode(nodeId);
+}
+
+Windows::Foundation::IAsyncOperation<Controller::AttributeValue>
+MatterController::ReadAttributeAsync(uint64_t nodeId, Controller::AttributePath path)
+{
+    if (!path)
+    {
+        throw hresult_invalid_argument(L"path cannot be null.");
+    }
+    co_await resume_background();
+    auto data = mRuntime->ReadAttribute(nodeId, path.EndpointId(), path.ClusterId(), path.AttributeId());
+    co_return winrt::make<implementation::AttributeValue>(path, data);
+}
+
+Windows::Foundation::IAsyncAction MatterController::WriteAttributeAsync(
+    uint64_t nodeId, Controller::AttributePath path, Windows::Foundation::Collections::IPropertySet value)
+{
+    if (!path || !value)
+    {
+        throw hresult_invalid_argument(L"path and value cannot be null.");
+    }
+    co_await resume_background();
+    mRuntime->WriteAttribute(nodeId, path.EndpointId(), path.ClusterId(), path.AttributeId(), value);
+}
+
+Windows::Foundation::IAsyncOperation<Controller::CommandResult> MatterController::InvokeCommandAsync(
+    uint64_t nodeId, Controller::CommandPath path, Windows::Foundation::Collections::IPropertySet arguments)
+{
+    if (!path || !arguments)
+    {
+        throw hresult_invalid_argument(L"path and arguments cannot be null.");
+    }
+    co_await resume_background();
+    auto data = mRuntime->InvokeCommand(nodeId, path.EndpointId(), path.ClusterId(), path.CommandId(), arguments);
+    co_return winrt::make<implementation::CommandResult>(path, data);
+}
+
+Windows::Foundation::IAsyncOperation<Controller::AttributeSubscription>
+MatterController::SubscribeAttributeAsync(uint64_t nodeId, Controller::AttributePath path, uint16_t minimumIntervalSeconds,
+                                          uint16_t maximumIntervalSeconds)
+{
+    if (!path)
+    {
+        throw hresult_invalid_argument(L"path cannot be null.");
+    }
+    co_await resume_background();
+    co_return mRuntime->SubscribeAttribute(nodeId, path.EndpointId(), path.ClusterId(), path.AttributeId(),
+                                           minimumIntervalSeconds, maximumIntervalSeconds);
+}
+
+Controller::OnOffCluster MatterController::GetOnOffCluster(uint64_t nodeId, uint16_t endpointId)
+{
+    return winrt::make<OnOffCluster>(mRuntime, nodeId, endpointId);
+}
+
+Controller::LevelControlCluster MatterController::GetLevelControlCluster(uint64_t nodeId, uint16_t endpointId)
+{
+    return winrt::make<LevelControlCluster>(mRuntime, nodeId, endpointId);
+}
+
+Controller::BasicInformationCluster MatterController::GetBasicInformationCluster(uint64_t nodeId, uint16_t endpointId)
+{
+    return winrt::make<BasicInformationCluster>(mRuntime, nodeId, endpointId);
+}
+
+Windows::Foundation::IAsyncAction MatterController::CloseAsync()
+{
+    if (mRuntime)
+    {
+        mRuntime->Close();
+        mRuntime.reset();
+    }
+    co_return;
+}
+
+} // namespace winrt::Matter::Windows::Controller::implementation

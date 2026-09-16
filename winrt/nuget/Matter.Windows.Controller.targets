@@ -1,0 +1,26 @@
+<Project>
+  <PropertyGroup>
+    <_MatterControllerRid Condition="'$(PlatformTarget)' == 'x64' or '$(Platform)' == 'x64'">win-x64</_MatterControllerRid>
+    <_MatterControllerRid Condition="'$(PlatformTarget)' == 'ARM64' or '$(Platform)' == 'ARM64'">win-arm64</_MatterControllerRid>
+  </PropertyGroup>
+
+  <Target Name="MatterControllerValidateArchitecture" BeforeTargets="PrepareForBuild">
+    <Error Condition="'$(_MatterControllerRid)' == ''"
+           Text="Matter.Windows.Controller supports only x64 and ARM64. Set PlatformTarget to x64 or ARM64." />
+  </Target>
+
+  <Target Name="MatterControllerAddProjectionInput" BeforeTargets="CsWinRTGenerateProjection">
+    <ItemGroup>
+      <CsWinRTInputs Include="$(MatterControllerWinMD)" />
+    </ItemGroup>
+  </Target>
+
+  <ItemGroup Condition="'$(_MatterControllerRid)' != ''">
+    <Content Include="$(MSBuildThisFileDirectory)..\runtimes\$(_MatterControllerRid)\native\Matter.Windows.Controller.dll">
+      <Link>Matter.Windows.Controller.dll</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+      <Visible>false</Visible>
+    </Content>
+  </ItemGroup>
+</Project>
