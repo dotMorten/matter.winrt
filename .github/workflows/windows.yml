@@ -1,0 +1,90 @@
+name: Windows
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.ref }}-${{ github.workflow }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-2025
+    timeout-minutes: 120
+
+    steps:
+      - name: Enable long paths
+        shell: pwsh
+        run: git config --global core.longpaths true
+
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          submodules: recursive
+
+      - name: Build package
+        shell: pwsh
+        run: .\tools\build.ps1 -Architecture all
+
+      - name: Build sample consumers
+        shell: pwsh
+        run: |
+          dotnet restore .\samples\ControllerApp\MatterControllerApp.csproj `
+            -p:Platform=x64 --configfile .\NuGet.config --force --no-cache
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          dotnet build .\samples\ControllerApp\MatterControllerApp.csproj `
+            -c Release -p:Platform=x64 --no-restore --nologo
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          dotnet restore .\samples\ControllerApp\MatterControllerApp.csproj `
+            -p:Platform=ARM64 --configfile .\NuGet.config --force --no-cache
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          dotnet build .\samples\ControllerApp\MatterControllerApp.csproj `
+            -c Release -p:Platform=ARM64 --no-restore --nologo
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Download compatibility baseline
+        shell: pwsh
+        run: |
+          $package = Join-Path $env:RUNNER_TEMP 'baseline.nupkg'
+          $archive = Join-Path $env:RUNNER_TEMP 'baseline.zip'
+          $destination = Join-Path $env:RUNNER_TEMP 'baseline'
+          Invoke-WebRequest `
+            -Uri 'https://github.com/dotMorten/matter.winrt/releases/download/v0.1.0-preview.6/Matter.Windows.Controller.0.1.0-preview.6.nupkg' `
+            -OutFile $package
+          $expectedHash = '8DC16FB9707BADB8BAAF4CDCA4FB590FDDB12D55FA3796B7FE8EC4F4C4B02334'
+          $actualHash = (Get-FileHash $package -Algorithm SHA256).Hash
+          if ($actualHash -ne $expectedHash) {
+            throw "Compatibility baseline hash mismatch. Expected $expectedHash; got $actualHash."
+          }
+          Copy-Item $package $archive
+          Expand-Archive $archive $destination
+          "BASELINE_WINMD=$(Join-Path $destination 'winmd\Matter.Windows.Controller.winmd')" |
+            Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Validate ABI
+        shell: pwsh
+        run: |
+          . .\matterforwindows\scripts\setup\windows.ps1 -Architecture x64
+          .\tools\verify-abi.ps1 `
+            -BaselineWinmd $env:BASELINE_WINMD `
+            -CurrentWinmd .\out\win-winrt-x64\Matter.Windows.Controller.winmd `
+            -EquivalentWinmd .\out\win-winrt-arm64\Matter.Windows.Controller.winmd `
+            -NativeDll @( `
+              .\out\win-winrt-x64\Matter.Windows.Controller.dll, `
+              .\out\win-winrt-arm64\Matter.Windows.Controller.dll `
+            )
+
+      - name: Upload package
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.0
+        with:
+          name: Matter.Windows.Controller
+          path: artifacts/Matter.Windows.Controller.*.nupkg
+          if-no-files-found: error
+          retention-days: 14
