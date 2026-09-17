@@ -37,13 +37,15 @@ jobs:
         shell: pwsh
         run: |
           dotnet restore .\samples\ControllerApp\MatterControllerApp.csproj `
-            -p:Platform=x64 --configfile .\NuGet.config --force --no-cache
+            -p:Platform=x64 -p:Configuration=Release `
+            --configfile .\NuGet.config --force --no-cache
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           dotnet build .\samples\ControllerApp\MatterControllerApp.csproj `
             -c Release -p:Platform=x64 --no-restore --nologo
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           dotnet restore .\samples\ControllerApp\MatterControllerApp.csproj `
-            -p:Platform=ARM64 --configfile .\NuGet.config --force --no-cache
+            -p:Platform=ARM64 -p:Configuration=Release `
+            --configfile .\NuGet.config --force --no-cache
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           dotnet build .\samples\ControllerApp\MatterControllerApp.csproj `
             -c Release -p:Platform=ARM64 --no-restore --nologo
@@ -72,14 +74,15 @@ jobs:
         shell: pwsh
         run: |
           . .\matterforwindows\scripts\setup\windows.ps1 -Architecture x64
+          $nativeDlls = @(
+            '.\out\win-winrt-x64\Matter.Windows.Controller.dll'
+            '.\out\win-winrt-arm64\Matter.Windows.Controller.dll'
+          )
           .\tools\verify-abi.ps1 `
             -BaselineWinmd $env:BASELINE_WINMD `
             -CurrentWinmd .\out\win-winrt-x64\Matter.Windows.Controller.winmd `
             -EquivalentWinmd .\out\win-winrt-arm64\Matter.Windows.Controller.winmd `
-            -NativeDll @( `
-              .\out\win-winrt-x64\Matter.Windows.Controller.dll, `
-              .\out\win-winrt-arm64\Matter.Windows.Controller.dll `
-            )
+            -NativeDll $nativeDlls
 
       - name: Upload package
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.0
