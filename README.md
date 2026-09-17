@@ -38,6 +38,8 @@ version used at build time.
 
 ## Versioning and compatibility
 
+- The complete policy is documented in
+  [VERSIONING.md](VERSIONING.md).
 - The NuGet package follows semantic versioning. Preview suffixes identify
   pre-stable contracts and may contain breaking API or ABI changes.
 - A future stable release will preserve existing WinRT metadata within a major
@@ -51,9 +53,8 @@ version used at build time.
 - Each package pins one Matter SDK commit. Updating that pin requires x64 and
   ARM64 component builds, sample builds against the produced package, and a
   package version change.
-- Release automation should compare the generated WinMD with the previous
-  stable package and reject incompatible changes within the same major version
-  before a stable package is published.
+- The Windows workflow compares generated WinMD metadata with the adopted
+  release baseline and validates the x64 and ARM64 native export tables.
 
 ## Clone and build
 
