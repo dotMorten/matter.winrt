@@ -74,12 +74,16 @@ shared_library("Matter.Windows.Controller") {
     "CommandPath.h",
     "ControllerOptions.cpp",
     "ControllerOptions.h",
+    "EventPath.cpp",
+    "EventPath.h",
     "MatterController.cpp",
     "MatterController.h",
     "OnNetworkCommissioningParameters.cpp",
     "OnNetworkCommissioningParameters.h",
     "Projection.cpp",
     "ProjectionTypes.h",
+    "TimedInteractionOptions.cpp",
+    "TimedInteractionOptions.h",
     "module.def",
   ]
   configs += [ ":component_config" ]
