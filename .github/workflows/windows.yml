@@ -37,20 +37,18 @@ jobs:
         shell: pwsh
         run: |
           dotnet restore .\samples\ControllerApp\MatterControllerApp.csproj `
-            -p:Platform=x64 -p:PublishReadyToRun=false `
+            -p:Platform=x64 -p:Configuration=Release `
             --configfile .\NuGet.config --force --no-cache
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           dotnet build .\samples\ControllerApp\MatterControllerApp.csproj `
-            -c Release -p:Platform=x64 -p:PublishReadyToRun=false `
-            --no-restore --nologo
+            -c Release -p:Platform=x64 --no-restore --nologo
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           dotnet restore .\samples\ControllerApp\MatterControllerApp.csproj `
-            -p:Platform=ARM64 -p:PublishReadyToRun=false `
+            -p:Platform=ARM64 -p:Configuration=Release `
             --configfile .\NuGet.config --force --no-cache
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           dotnet build .\samples\ControllerApp\MatterControllerApp.csproj `
-            -c Release -p:Platform=ARM64 -p:PublishReadyToRun=false `
-            --no-restore --nologo
+            -c Release -p:Platform=ARM64 --no-restore --nologo
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Download compatibility baseline
