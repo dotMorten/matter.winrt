@@ -68,6 +68,15 @@ namespace Matter.Windows.Controller
         UInt32 CommandId { get; };
     };
 
+    runtimeclass EventPath
+    {
+        EventPath(UInt16 endpointId, UInt32 clusterId, UInt32 eventId, Boolean urgent);
+        UInt16 EndpointId { get; };
+        UInt32 ClusterId { get; };
+        UInt32 EventId { get; };
+        Boolean Urgent { get; };
+    };
+
     runtimeclass AttributeValue
     {
         AttributePath Path { get; };
@@ -78,6 +87,30 @@ namespace Matter.Windows.Controller
     {
         CommandPath Path { get; };
         Windows.Foundation.Collections.IPropertySet Data { get; };
+    };
+
+    runtimeclass TimedInteractionOptions
+    {
+        TimedInteractionOptions(UInt16 timeoutMilliseconds);
+        UInt16 TimeoutMilliseconds { get; };
+    };
+
+    runtimeclass EventValue
+    {
+        EventPath Path { get; };
+        UInt64 EventNumber { get; };
+        Windows.Foundation.Collections.IPropertySet Data { get; };
+    };
+
+    runtimeclass EventReportEventArgs
+    {
+        EventValue Value { get; };
+    };
+
+    runtimeclass EventSubscription
+    {
+        event Windows.Foundation.TypedEventHandler<EventSubscription, EventReportEventArgs> ReportReceived;
+        Windows.Foundation.IAsyncAction CloseAsync();
     };
 
     runtimeclass AttributeReportEventArgs
@@ -135,8 +168,12 @@ namespace Matter.Windows.Controller
         Windows.Foundation.IAsyncAction RemoveNodeAsync(UInt64 nodeId);
         Windows.Foundation.IAsyncOperation<AttributeValue> ReadAttributeAsync(UInt64 nodeId, AttributePath path);
         Windows.Foundation.IAsyncAction WriteAttributeAsync(UInt64 nodeId, AttributePath path, Windows.Foundation.Collections.IPropertySet value);
+        Windows.Foundation.IAsyncAction WriteAttributeTimedAsync(UInt64 nodeId, AttributePath path, Windows.Foundation.Collections.IPropertySet value, TimedInteractionOptions options);
         Windows.Foundation.IAsyncOperation<CommandResult> InvokeCommandAsync(UInt64 nodeId, CommandPath path, Windows.Foundation.Collections.IPropertySet arguments);
+        Windows.Foundation.IAsyncOperation<CommandResult> InvokeCommandTimedAsync(UInt64 nodeId, CommandPath path, Windows.Foundation.Collections.IPropertySet arguments, TimedInteractionOptions options);
         Windows.Foundation.IAsyncOperation<AttributeSubscription> SubscribeAttributeAsync(UInt64 nodeId, AttributePath path, UInt16 minimumIntervalSeconds, UInt16 maximumIntervalSeconds);
+        Windows.Foundation.IAsyncOperation<Windows.Foundation.Collections.IVectorView<EventValue> > ReadEventsAsync(UInt64 nodeId, EventPath path, UInt64 minimumEventNumber);
+        Windows.Foundation.IAsyncOperation<EventSubscription> SubscribeEventAsync(UInt64 nodeId, EventPath path, UInt64 minimumEventNumber, UInt16 minimumIntervalSeconds, UInt16 maximumIntervalSeconds);
         OnOffCluster GetOnOffCluster(UInt64 nodeId, UInt16 endpointId);
         LevelControlCluster GetLevelControlCluster(UInt64 nodeId, UInt16 endpointId);
         BasicInformationCluster GetBasicInformationCluster(UInt64 nodeId, UInt16 endpointId);

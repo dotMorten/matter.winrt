@@ -15,13 +15,20 @@
 #include "CommissionedNode.g.h"
 #include "CommissioningProgressEventArgs.g.h"
 #include "ControllerOptions.g.h"
+#include "EventPath.g.h"
+#include "EventReportEventArgs.g.h"
+#include "EventSubscription.g.h"
+#include "EventValue.g.h"
 #include "LevelControlCluster.g.h"
 #include "MatterController.g.h"
 #include "OnNetworkCommissioningParameters.g.h"
 #include "OnOffCluster.g.h"
+#include "TimedInteractionOptions.g.h"
 
 #include <functional>
 #include <memory>
+#include <mutex>
+#include <vector>
 
 namespace winrt::Matter::Windows::Controller::implementation {
 
@@ -109,6 +116,21 @@ private:
     uint32_t mCommandId;
 };
 
+struct EventPath : EventPathT<EventPath>
+{
+    EventPath(uint16_t endpointId, uint32_t clusterId, uint32_t eventId, bool urgent);
+    uint16_t EndpointId() const;
+    uint32_t ClusterId() const;
+    uint32_t EventId() const;
+    bool Urgent() const;
+
+private:
+    uint16_t mEndpointId;
+    uint32_t mClusterId;
+    uint32_t mEventId;
+    bool mUrgent;
+};
+
 struct CommissionedNode : CommissionedNodeT<CommissionedNode>
 {
     CommissionedNode(uint64_t nodeId, uint16_t fabricIndex);
@@ -153,6 +175,57 @@ private:
     Windows::Foundation::Collections::IPropertySet mData;
 };
 
+struct TimedInteractionOptions : TimedInteractionOptionsT<TimedInteractionOptions>
+{
+    explicit TimedInteractionOptions(uint16_t timeoutMilliseconds);
+    uint16_t TimeoutMilliseconds() const;
+
+private:
+    uint16_t mTimeoutMilliseconds;
+};
+
+struct EventValue : EventValueT<EventValue>
+{
+    EventValue(Controller::EventPath path, uint64_t eventNumber, Windows::Foundation::Collections::IPropertySet data);
+    Controller::EventPath Path() const;
+    uint64_t EventNumber() const;
+    Windows::Foundation::Collections::IPropertySet Data() const;
+
+private:
+    Controller::EventPath mPath;
+    uint64_t mEventNumber;
+    Windows::Foundation::Collections::IPropertySet mData;
+};
+
+struct EventReportEventArgs : EventReportEventArgsT<EventReportEventArgs>
+{
+    explicit EventReportEventArgs(Controller::EventValue value);
+    Controller::EventValue Value() const;
+
+private:
+    Controller::EventValue mValue;
+};
+
+struct EventSubscription : EventSubscriptionT<EventSubscription>
+{
+    EventSubscription() = default;
+    explicit EventSubscription(std::function<void()> close);
+    event_token ReportReceived(
+        Windows::Foundation::TypedEventHandler<Controller::EventSubscription, Controller::EventReportEventArgs> const & handler);
+    void ReportReceived(event_token const & token) noexcept;
+    Windows::Foundation::IAsyncAction CloseAsync();
+    void Publish(Controller::EventReportEventArgs const & args);
+
+private:
+    winrt::event<Windows::Foundation::TypedEventHandler<Controller::EventSubscription, Controller::EventReportEventArgs>>
+        mReportReceived;
+    std::mutex mReportMutex;
+    std::vector<Controller::EventReportEventArgs> mPendingReports;
+    size_t mReportHandlerCount = 0;
+    bool mDrainingPendingReports = false;
+    std::function<void()> mClose;
+};
+
 struct AttributeReportEventArgs : AttributeReportEventArgsT<AttributeReportEventArgs>
 {
     explicit AttributeReportEventArgs(Controller::AttributeValue value);
@@ -175,6 +248,10 @@ struct AttributeSubscription : AttributeSubscriptionT<AttributeSubscription>
 private:
     winrt::event<Windows::Foundation::TypedEventHandler<Controller::AttributeSubscription, Controller::AttributeReportEventArgs>>
         mReportReceived;
+    std::mutex mReportMutex;
+    std::vector<Controller::AttributeReportEventArgs> mPendingReports;
+    size_t mReportHandlerCount = 0;
+    bool mDrainingPendingReports = false;
     std::function<void()> mClose;
 };
 
@@ -262,17 +339,31 @@ struct MatterController : MatterControllerT<MatterController>
                                                                                         Controller::AttributePath path);
     Windows::Foundation::IAsyncAction WriteAttributeAsync(uint64_t nodeId, Controller::AttributePath path,
                                                           Windows::Foundation::Collections::IPropertySet value);
+    Windows::Foundation::IAsyncAction WriteAttributeTimedAsync(
+        uint64_t nodeId, Controller::AttributePath path, Windows::Foundation::Collections::IPropertySet value,
+        Controller::TimedInteractionOptions options);
     Windows::Foundation::IAsyncOperation<Controller::CommandResult>
     InvokeCommandAsync(uint64_t nodeId, Controller::CommandPath path, Windows::Foundation::Collections::IPropertySet arguments);
+    Windows::Foundation::IAsyncOperation<Controller::CommandResult> InvokeCommandTimedAsync(
+        uint64_t nodeId, Controller::CommandPath path, Windows::Foundation::Collections::IPropertySet arguments,
+        Controller::TimedInteractionOptions options);
     Windows::Foundation::IAsyncOperation<Controller::AttributeSubscription>
     SubscribeAttributeAsync(uint64_t nodeId, Controller::AttributePath path, uint16_t minimumIntervalSeconds,
                             uint16_t maximumIntervalSeconds);
+    Windows::Foundation::IAsyncOperation<Windows::Foundation::Collections::IVectorView<Controller::EventValue>>
+    ReadEventsAsync(uint64_t nodeId, Controller::EventPath path, uint64_t minimumEventNumber);
+    Windows::Foundation::IAsyncOperation<Controller::EventSubscription>
+    SubscribeEventAsync(uint64_t nodeId, Controller::EventPath path, uint64_t minimumEventNumber,
+                        uint16_t minimumIntervalSeconds, uint16_t maximumIntervalSeconds);
     Controller::OnOffCluster GetOnOffCluster(uint64_t nodeId, uint16_t endpointId);
     Controller::LevelControlCluster GetLevelControlCluster(uint64_t nodeId, uint16_t endpointId);
     Controller::BasicInformationCluster GetBasicInformationCluster(uint64_t nodeId, uint16_t endpointId);
     Windows::Foundation::IAsyncAction CloseAsync();
 
 private:
+    std::shared_ptr<ControllerRuntime> Runtime();
+
+    std::mutex mRuntimeMutex;
     std::shared_ptr<ControllerRuntime> mRuntime;
     winrt::event<Windows::Foundation::TypedEventHandler<Controller::MatterController, Controller::CommissioningProgressEventArgs>>
         mCommissioningProgress;
@@ -293,6 +384,10 @@ struct BleCommissioningParameters :
 struct AttributePath : AttributePathT<AttributePath, implementation::AttributePath>
 {};
 struct CommandPath : CommandPathT<CommandPath, implementation::CommandPath>
+{};
+struct EventPath : EventPathT<EventPath, implementation::EventPath>
+{};
+struct TimedInteractionOptions : TimedInteractionOptionsT<TimedInteractionOptions, implementation::TimedInteractionOptions>
 {};
 struct MatterController : MatterControllerT<MatterController, implementation::MatterController>
 {};
