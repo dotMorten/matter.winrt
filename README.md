@@ -64,6 +64,26 @@ cd matter.winrt
 .\tools\build.ps1
 ```
 
+The native build has two explicit stages. The first uses the Matter SDK's own
+GN/Ninja build inside the submodule and produces one private controller SDK
+archive:
+
+```powershell
+.\tools\build-matter.ps1 -Architecture x64
+```
+
+The second builds the C++/WinRT component directly with the MSVC and Windows
+SDK tools, using the generated Matter headers and archive at their known
+submodule-relative paths:
+
+```powershell
+.\tools\build-winrt.ps1 -Architecture x64
+```
+
+`build.ps1` runs both stages for x64 and ARM64 before packaging. The outer
+repository is not a GN source tree and does not create directory junctions to
+the SDK.
+
 The build produces
 `artifacts\Matter.Windows.Controller.0.1.0-preview.6.nupkg`. The package
 contains a WinMD plus architecture-specific native DLLs for `win-x64` and
