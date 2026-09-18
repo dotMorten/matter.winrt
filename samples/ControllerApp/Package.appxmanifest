@@ -66,5 +66,7 @@
     <Capability Name="internetClient" />
     <Capability Name="privateNetworkClientServer" />
     <DeviceCapability Name="bluetooth" />
+    <DeviceCapability Name="pointOfService" />
+    <DeviceCapability Name="webcam" />
   </Capabilities>
 </Package>

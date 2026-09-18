@@ -85,7 +85,7 @@ repository is not a GN source tree and does not create directory junctions to
 the SDK.
 
 The build produces
-`artifacts\Matter.Windows.Controller.0.1.0-preview.6.nupkg`. The package
+`artifacts\Matter.Windows.Controller.0.1.0-preview.7.nupkg`. The package
 contains a WinMD plus architecture-specific native DLLs for `win-x64` and
 `win-arm64`.
 
@@ -97,11 +97,15 @@ dotnet build .\samples\ControllerApp\MatterControllerApp.csproj `
 ```
 
 The sample initializes its persisted controller fabric when the app launches
-and closes it with the window. Its **Connect** page accepts a sharing code or
-BLE setup parameters and allocates local node identifiers automatically. Its
-**Devices** page selects from a dropdown of known devices, reads common
-clusters, queries generic attribute paths, and provides On/Off and Level
-Control commands.
+and closes it with the window. Its landing page presents known devices as a
+grid and provides an empty-state call to action when none are commissioned.
+**Add device** opens a manual sharing-code, camera QR-scanning, or Bluetooth LE
+workflow; after connection, the app suggests the device-reported name and lets
+the user edit it before finishing. Selecting a device opens its details page
+with discovered On/Off and Level controls plus generic attribute queries.
+Devices that already contain this controller fabric but are missing from the
+local node index can be verified and restored by node ID without repeating
+AddNOC.
 
 This is a development preview. Operational credentials are file-backed and
 test device attestation is enabled by default.

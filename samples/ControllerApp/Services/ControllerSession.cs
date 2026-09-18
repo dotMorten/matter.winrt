@@ -1,9 +1,16 @@
 using Matter.Windows.Controller;
+using MatterControllerApp.Models;
+using System.Text.Json;
 
 namespace MatterControllerApp.Services;
 
 public sealed class ControllerSession
 {
+    private readonly string storagePath = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "MatterControllerApp");
+    private readonly Dictionary<string, string> deviceNames = [];
+
     public MatterController? Controller { get; private set; }
     public string? InitializationError { get; private set; }
 
@@ -22,11 +29,10 @@ public sealed class ControllerSession
 
         try
         {
+            LoadDeviceNames();
             ControllerOptions options = new()
             {
-                StoragePath = Path.Combine(
-                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                    "MatterControllerApp"),
+                StoragePath = storagePath,
                 AllowTestAttestation = true
             };
             Controller = await MatterController.CreateAsync(options);
@@ -44,42 +50,115 @@ public sealed class ControllerSession
         }
     }
 
-    public async Task<CommissionedNode> CommissionOnNetworkAsync(
+    public IReadOnlyList<KnownDevice> GetKnownDevices()
+    {
+        MatterController controller = RequireController();
+        return controller.CommissionedNodes
+            .Select(CreateKnownDevice)
+            .OrderBy(device => device.DisplayName, StringComparer.CurrentCultureIgnoreCase)
+            .ToList();
+    }
+
+    public async Task<AddedDeviceResult> CommissionOnNetworkAsync(
         string setupCode,
         uint setupPinCode,
         ushort longDiscriminator)
     {
         MatterController controller = RequireController();
-        CommissionedNode node = await controller.CommissionOnNetworkAsync(new OnNetworkCommissioningParameters
+        ulong nodeId = AllocateNodeId(controller);
+        CommissionedNode node;
+        try
         {
-            NodeId = AllocateNodeId(controller),
-            SetupCode = setupCode.Trim(),
-            SetupPinCode = setupPinCode,
-            LongDiscriminator = longDiscriminator
-        });
-        NodesChanged?.Invoke(this, EventArgs.Empty);
-        return node;
+            node = await controller.CommissionOnNetworkAsync(new OnNetworkCommissioningParameters
+            {
+                NodeId = nodeId,
+                SetupCode = setupCode.Trim(),
+                SetupPinCode = setupPinCode,
+                LongDiscriminator = longDiscriminator
+            });
+        }
+        catch (Exception exception) when (
+            exception.Message.Contains("already exists", StringComparison.OrdinalIgnoreCase))
+        {
+            node = await RecoverAfterDuplicateFabricAsync(controller, nodeId, exception);
+        }
+        return await RegisterCommissionedNodeAsync(node);
     }
 
-    public async Task<CommissionedNode> CommissionBleAsync(
+    public async Task<AddedDeviceResult> CommissionBleAsync(
         uint setupPinCode,
         ushort longDiscriminator)
     {
         MatterController controller = RequireController();
-        CommissionedNode node = await controller.CommissionBleAsync(new BleCommissioningParameters
+        ulong nodeId = AllocateNodeId(controller);
+        CommissionedNode node;
+        try
         {
-            NodeId = AllocateNodeId(controller),
-            SetupPinCode = setupPinCode,
-            LongDiscriminator = longDiscriminator
-        });
+            node = await controller.CommissionBleAsync(new BleCommissioningParameters
+            {
+                NodeId = nodeId,
+                SetupPinCode = setupPinCode,
+                LongDiscriminator = longDiscriminator
+            });
+        }
+        catch (Exception exception) when (
+            exception.Message.Contains("already exists", StringComparison.OrdinalIgnoreCase))
+        {
+            node = await RecoverAfterDuplicateFabricAsync(controller, nodeId, exception);
+        }
+        return await RegisterCommissionedNodeAsync(node);
+    }
+
+    public async Task<AddedDeviceResult> RecoverNodeAsync(ulong nodeId)
+    {
+        CommissionedNode node = await RequireController().RecoverNodeAsync(nodeId);
+        return await RegisterCommissionedNodeAsync(node);
+    }
+
+    public async Task<AddedDeviceResult> RenameDeviceAsync(
+        KnownDevice device,
+        string displayName)
+    {
+        string name = displayName.Trim();
+        if (name.Length == 0)
+        {
+            throw new InvalidOperationException("Enter a device name.");
+        }
+
+        deviceNames[GetDeviceKey(device.FabricIndex, device.NodeId)] = name;
+        string? warning = null;
+        try
+        {
+            await SaveDeviceNamesAsync();
+        }
+        catch (Exception exception)
+        {
+            warning =
+                $"The display name could not be saved and may be lost when the app closes: {exception.Message}";
+        }
+
+        KnownDevice renamedDevice = device with { DisplayName = name };
         NodesChanged?.Invoke(this, EventArgs.Empty);
-        return node;
+        return new AddedDeviceResult(renamedDevice, warning);
     }
 
     public async Task RemoveNodeAsync(ulong nodeId)
     {
-        await RequireController().RemoveNodeAsync(nodeId);
-        NodesChanged?.Invoke(this, EventArgs.Empty);
+        MatterController controller = RequireController();
+        CommissionedNode? node = controller.CommissionedNodes.FirstOrDefault(candidate => candidate.NodeId == nodeId);
+        try
+        {
+            await controller.RemoveNodeAsync(nodeId);
+            if (node is not null)
+            {
+                deviceNames.Remove(GetDeviceKey(node.FabricIndex, node.NodeId));
+                await SaveDeviceNamesAsync();
+            }
+        }
+        finally
+        {
+            NodesChanged?.Invoke(this, EventArgs.Empty);
+        }
     }
 
     public async Task CloseAsync()
@@ -97,7 +176,7 @@ public sealed class ControllerSession
     }
 
     public MatterController RequireController() =>
-        Controller ?? throw new InvalidOperationException("Initialize the controller on the Connect page first.");
+        Controller ?? throw new InvalidOperationException("The Matter controller is not initialized.");
 
     private void OnCommissioningProgress(MatterController sender, CommissioningProgressEventArgs args) =>
         CommissioningProgress?.Invoke(this, $"{args.Stage}: {args.Message}");
@@ -114,4 +193,108 @@ public sealed class ControllerSession
         }
         throw new InvalidOperationException("No Matter node identifiers are available.");
     }
+
+    private KnownDevice CreateKnownDevice(CommissionedNode node)
+    {
+        string key = GetDeviceKey(node.FabricIndex, node.NodeId);
+        string name = deviceNames.GetValueOrDefault(key, "Matter device");
+        return new KnownDevice(node.NodeId, node.FabricIndex, name);
+    }
+
+    private async Task<AddedDeviceResult> RegisterCommissionedNodeAsync(CommissionedNode node)
+    {
+        string? warning = null;
+        string displayName;
+        try
+        {
+            BasicInformation information =
+                await RequireController().GetBasicInformationCluster(node.NodeId, 0).ReadAsync();
+            displayName = FirstNonEmpty(information.NodeLabel, information.ProductName, "Matter device");
+        }
+        catch (Exception exception)
+        {
+            displayName = "Matter device";
+            warning = $"The device was added, but its name could not be read: {exception.Message}";
+        }
+
+        deviceNames[GetDeviceKey(node.FabricIndex, node.NodeId)] = displayName;
+        try
+        {
+            await SaveDeviceNamesAsync();
+        }
+        catch (Exception exception)
+        {
+            warning = AppendWarning(
+                warning,
+                $"The display name could not be saved and may be lost when the app closes: {exception.Message}");
+        }
+
+        KnownDevice device = new(node.NodeId, node.FabricIndex, displayName);
+        NodesChanged?.Invoke(this, EventArgs.Empty);
+        return new AddedDeviceResult(device, warning);
+    }
+
+    private static async Task<CommissionedNode> RecoverAfterDuplicateFabricAsync(
+        MatterController controller,
+        ulong nodeId,
+        Exception commissioningException)
+    {
+        try
+        {
+            return await controller.RecoverNodeAsync(nodeId);
+        }
+        catch (Exception recoveryException)
+        {
+            throw new InvalidOperationException(
+                $"The device is already on this controller fabric, but node {nodeId} " +
+                $"could not be restored: {recoveryException.Message}",
+                new AggregateException(commissioningException, recoveryException));
+        }
+    }
+
+    private void LoadDeviceNames()
+    {
+        deviceNames.Clear();
+        string path = GetDeviceNamesPath();
+        if (!File.Exists(path))
+        {
+            return;
+        }
+
+        Dictionary<string, string>? storedNames =
+            JsonSerializer.Deserialize<Dictionary<string, string>>(File.ReadAllText(path));
+        if (storedNames is null)
+        {
+            throw new InvalidDataException($"Device name storage is invalid: {path}");
+        }
+
+        foreach ((string key, string value) in storedNames)
+        {
+            if (!string.IsNullOrWhiteSpace(value))
+            {
+                deviceNames[key] = value;
+            }
+        }
+    }
+
+    private async Task SaveDeviceNamesAsync()
+    {
+        Directory.CreateDirectory(storagePath);
+        string path = GetDeviceNamesPath();
+        string temporaryPath = path + ".tmp";
+        string json = JsonSerializer.Serialize(deviceNames, new JsonSerializerOptions { WriteIndented = true });
+        await File.WriteAllTextAsync(temporaryPath, json);
+        File.Move(temporaryPath, path, true);
+    }
+
+    private string GetDeviceNamesPath() => Path.Combine(storagePath, "device-names.json");
+
+    private static string GetDeviceKey(ushort fabricIndex, ulong nodeId) =>
+        $"{fabricIndex}:{nodeId}";
+
+    private static string FirstNonEmpty(params string[] values) =>
+        values.First(value => !string.IsNullOrWhiteSpace(value));
+
+    private static string AppendWarning(string? current, string warning) =>
+        string.IsNullOrEmpty(current) ? warning : $"{current} {warning}";
 }

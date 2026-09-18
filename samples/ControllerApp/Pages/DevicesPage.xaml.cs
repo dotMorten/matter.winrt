@@ -1,3 +1,5 @@
+using MatterControllerApp.Dialogs;
+using MatterControllerApp.Models;
 using MatterControllerApp.ViewModels;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
@@ -14,27 +16,37 @@ public sealed partial class DevicesPage : Page
         Loaded += OnLoaded;
     }
 
-    private void OnLoaded(object sender, RoutedEventArgs args) => ViewModel.RefreshNodes();
+    public static Visibility When(bool value) =>
+        value ? Visibility.Visible : Visibility.Collapsed;
 
-    private async void OnRemoveNodeClicked(object sender, RoutedEventArgs args)
+    private async void OnLoaded(object sender, RoutedEventArgs args) =>
+        await ViewModel.LoadAsync();
+
+    private async void OnAddDeviceClicked(object sender, RoutedEventArgs args)
     {
-        if (ViewModel.SelectedNode is null)
+        AddDeviceDialog dialog = new()
         {
-            return;
-        }
-
-        ContentDialog confirmation = new()
-        {
-            XamlRoot = XamlRoot,
-            Title = "Remove Matter node?",
-            Content = $"Node {ViewModel.SelectedNode.NodeId} will be removed from this controller fabric.",
-            PrimaryButtonText = "Remove",
-            CloseButtonText = "Cancel",
-            DefaultButton = ContentDialogButton.Close
+            XamlRoot = XamlRoot
         };
-        if (await confirmation.ShowAsync() == ContentDialogResult.Primary)
+        try
         {
-            await ViewModel.RemoveNodeCommand.ExecuteAsync(null);
+            await dialog.ShowAsync();
+            if (dialog.Result is not null)
+            {
+                ViewModel.ShowAddedDevice(dialog.Result);
+            }
+        }
+        finally
+        {
+            dialog.Dispose();
+        }
+    }
+
+    private void OnDeviceClicked(object sender, ItemClickEventArgs args)
+    {
+        if (args.ClickedItem is KnownDevice device)
+        {
+            Frame.Navigate(typeof(DeviceDetailsPage), device);
         }
     }
 }

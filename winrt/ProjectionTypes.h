@@ -334,6 +334,7 @@ struct MatterController : MatterControllerT<MatterController>
     Windows::Foundation::IAsyncOperation<Controller::CommissionedNode>
     CommissionBleAsync(Controller::BleCommissioningParameters parameters);
     Windows::Foundation::Collections::IVectorView<Controller::CommissionedNode> CommissionedNodes();
+    Windows::Foundation::IAsyncOperation<Controller::CommissionedNode> RecoverNodeAsync(uint64_t nodeId);
     Windows::Foundation::IAsyncAction RemoveNodeAsync(uint64_t nodeId);
     Windows::Foundation::IAsyncOperation<Controller::AttributeValue> ReadAttributeAsync(uint64_t nodeId,
                                                                                         Controller::AttributePath path);

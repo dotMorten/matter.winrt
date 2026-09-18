@@ -165,6 +165,7 @@ namespace Matter.Windows.Controller
         Windows.Foundation.IAsyncOperation<CommissionedNode> CommissionOnNetworkAsync(OnNetworkCommissioningParameters parameters);
         Windows.Foundation.IAsyncOperation<CommissionedNode> CommissionBleAsync(BleCommissioningParameters parameters);
         Windows.Foundation.Collections.IVectorView<CommissionedNode> CommissionedNodes { get; };
+        Windows.Foundation.IAsyncOperation<CommissionedNode> RecoverNodeAsync(UInt64 nodeId);
         Windows.Foundation.IAsyncAction RemoveNodeAsync(UInt64 nodeId);
         Windows.Foundation.IAsyncOperation<AttributeValue> ReadAttributeAsync(UInt64 nodeId, AttributePath path);
         Windows.Foundation.IAsyncAction WriteAttributeAsync(UInt64 nodeId, AttributePath path, Windows.Foundation.Collections.IPropertySet value);

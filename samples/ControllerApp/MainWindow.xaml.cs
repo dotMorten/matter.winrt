@@ -1,5 +1,4 @@
 using Microsoft.UI.Xaml;
-using Microsoft.UI.Xaml.Controls;
 using MatterControllerApp.Pages;
 using WinUIEx;
 
@@ -8,11 +7,6 @@ using WinUIEx;
 
 namespace MatterControllerApp;
 
-/// <summary>
-/// The application window. This hosts a Frame that displays pages. Add your
-/// UI and logic to MainPage.xaml / MainPage.xaml.cs instead of here so you
-/// can use Page features such as navigation events and the Loaded lifecycle.
-/// </summary>
 public sealed partial class MainWindow : Window
 {
     public MainWindow()
@@ -31,8 +25,7 @@ public sealed partial class MainWindow : Window
         windowManager.PersistenceId = "MatterControllerMainWindow";
         AppWindow.Closing += OnWindowClosing;
 
-        MainNavigation.SelectedItem = ConnectNavigationItem;
-        RootFrame.Navigate(typeof(ConnectPage));
+        RootFrame.Navigate(typeof(DevicesPage));
     }
 
     private bool closeControllerComplete;
@@ -57,16 +50,4 @@ public sealed partial class MainWindow : Window
         }
     }
 
-    private void OnSelectionChanged(NavigationView sender, NavigationViewSelectionChangedEventArgs args)
-    {
-        Type pageType = (args.SelectedItemContainer?.Tag as string) switch
-        {
-            "devices" => typeof(DevicesPage),
-            _ => typeof(ConnectPage)
-        };
-        if (RootFrame.CurrentSourcePageType != pageType)
-        {
-            RootFrame.Navigate(pageType);
-        }
-    }
 }

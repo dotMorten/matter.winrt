@@ -2,7 +2,7 @@
 param(
     [ValidateSet("x64", "arm64", "all")]
     [string] $Architecture = "all",
-    [string] $Version = "0.1.0-preview.6",
+    [string] $Version = "0.1.0-preview.7",
     [string] $OutputDirectory = "artifacts",
     [switch] $SkipBuild
 )

@@ -1222,6 +1222,26 @@ public:
         return mCommissionedNodes;
     }
 
+    Controller::CommissionedNode RecoverNode(uint64_t nodeId)
+    {
+        if (!IsOperationalNodeId(nodeId))
+        {
+            throw hresult_invalid_argument(L"nodeId must be an operational Matter node identifier.");
+        }
+
+        (void) ReadAttribute(nodeId, 0, app::Clusters::BasicInformation::Id,
+                             app::Clusters::BasicInformation::Attributes::VendorID::Id);
+
+        std::scoped_lock lock(mOperationMutex);
+        EnsureOpen();
+        if (std::find(mCommissionedNodes.begin(), mCommissionedNodes.end(), nodeId) == mCommissionedNodes.end())
+        {
+            mCommissionedNodes.push_back(nodeId);
+            PersistCommissionedNodes();
+        }
+        return winrt::make<implementation::CommissionedNode>(nodeId, mCommissioner.GetFabricIndex());
+    }
+
     void RemoveNode(uint64_t nodeId)
     {
         std::scoped_lock lock(mOperationMutex);
@@ -2451,6 +2471,13 @@ Windows::Foundation::Collections::IVectorView<Controller::CommissionedNode> Matt
         nodes.push_back(winrt::make<implementation::CommissionedNode>(nodeId, runtime->FabricIndex()));
     }
     return single_threaded_vector(std::move(nodes)).GetView();
+}
+
+Windows::Foundation::IAsyncOperation<Controller::CommissionedNode> MatterController::RecoverNodeAsync(uint64_t nodeId)
+{
+    auto runtime = Runtime();
+    co_await resume_background();
+    co_return runtime->RecoverNode(nodeId);
 }
 
 Windows::Foundation::IAsyncAction MatterController::RemoveNodeAsync(uint64_t nodeId)
