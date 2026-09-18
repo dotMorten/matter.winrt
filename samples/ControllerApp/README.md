@@ -1,9 +1,11 @@
 # Matter WinRT controller sample
 
 This diagnostic WinUI 3 app consumes the local `Matter.Windows.Controller`
-NuGet package. It can initialize a persisted controller, commission over the
-network or Bluetooth LE, list persisted nodes, read Basic Information, and
-control On/Off and Level Control clusters.
+NuGet package. It initializes and closes the controller with the application
+window. The Connect page commissions with a multi-admin sharing code or
+Bluetooth LE and allocates node identifiers internally. The Devices page uses
+a known-device dropdown for generic attribute queries, Basic Information
+reads, and On/Off and Level Control commands.
 
 To add a device that is already owned by another Matter controller, open the
 device's commissioning window in that controller and paste its manual sharing

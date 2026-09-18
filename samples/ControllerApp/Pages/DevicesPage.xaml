@@ -1,0 +1,92 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<Page
+    x:Class="MatterControllerApp.Pages.DevicesPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:controller="using:Matter.Windows.Controller">
+
+    <Grid MaxWidth="1080" Padding="32" ColumnSpacing="24" RowSpacing="20">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="280" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+
+            <StackPanel Grid.ColumnSpan="2" Spacing="4">
+                <TextBlock Text="Persisted devices" Style="{StaticResource TitleTextBlockStyle}" />
+                <TextBlock Text="Select a node, inspect common clusters, query any attribute path, or send typed controls."
+                           TextWrapping="Wrap" Opacity="0.7" />
+            </StackPanel>
+
+            <Grid Grid.Row="1" RowSpacing="10">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+                <StackPanel Orientation="Horizontal" Spacing="8">
+                    <TextBlock Text="Nodes" Style="{StaticResource SubtitleTextBlockStyle}" VerticalAlignment="Center" />
+                    <Button x:Name="RefreshNodesButton" Content="Refresh" Command="{x:Bind ViewModel.RefreshNodesCommand}" />
+                </StackPanel>
+                <ComboBox x:Name="PersistedDevicesComboBox" Grid.Row="1" Header="Known device"
+                          HorizontalAlignment="Stretch"
+                          ItemsSource="{x:Bind ViewModel.CommissionedNodes, Mode=OneWay}"
+                          SelectedItem="{x:Bind ViewModel.SelectedNode, Mode=TwoWay}">
+                    <ComboBox.ItemTemplate>
+                        <DataTemplate x:DataType="controller:CommissionedNode">
+                            <TextBlock Text="{x:Bind NodeId}" />
+                        </DataTemplate>
+                    </ComboBox.ItemTemplate>
+                </ComboBox>
+                <Button x:Name="RemoveNodeButton" Grid.Row="2" Content="Remove selected node"
+                        Click="OnRemoveNodeClicked" />
+            </Grid>
+
+            <ScrollViewer Grid.Row="1" Grid.Column="1">
+            <StackPanel Spacing="14">
+                <NumberBox Header="Endpoint" Value="{x:Bind ViewModel.EndpointId, Mode=TwoWay}"
+                           SpinButtonPlacementMode="Compact" />
+                <StackPanel Orientation="Horizontal" Spacing="8">
+                    <Button x:Name="ReadDeviceButton" Content="Read common capabilities" Command="{x:Bind ViewModel.ReadDeviceCommand}" />
+                    <Button x:Name="ToggleButton" Content="Toggle On/Off" Command="{x:Bind ViewModel.ToggleCommand}" />
+                </StackPanel>
+                <Slider x:Name="LevelSlider" Header="Level" Minimum="0" Maximum="254" StepFrequency="1"
+                        Value="{x:Bind ViewModel.Level, Mode=TwoWay}" />
+                <Button x:Name="SetLevelButton" Content="Set level" HorizontalAlignment="Left"
+                        Command="{x:Bind ViewModel.SetLevelCommand}" />
+                <InfoBar IsOpen="True" IsClosable="False" Severity="Informational"
+                         Title="Device information" Message="{x:Bind ViewModel.DeviceInformation, Mode=OneWay}" />
+
+                <TextBlock Text="Generic attribute query" Style="{StaticResource SubtitleTextBlockStyle}" />
+                <Grid ColumnSpacing="12">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <TextBox x:Name="ClusterIdBox" Header="Cluster ID" PlaceholderText="Decimal or 0x-prefixed"
+                             Text="{x:Bind ViewModel.ClusterId, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                    <TextBox x:Name="AttributeIdBox" Grid.Column="1" Header="Attribute ID" PlaceholderText="Decimal or 0x-prefixed"
+                             Text="{x:Bind ViewModel.AttributeId, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                </Grid>
+                <Button x:Name="ReadAttributeButton" Content="Read attribute" HorizontalAlignment="Left"
+                        Command="{x:Bind ViewModel.ReadAttributeCommand}" />
+                <TextBox Header="Decoded value" Text="{x:Bind ViewModel.QueryResult, Mode=OneWay}"
+                         IsReadOnly="True" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="100" />
+            </StackPanel>
+            </ScrollViewer>
+
+            <Grid Grid.Row="2" Grid.ColumnSpan="2" ColumnSpacing="12">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+                <ProgressRing IsActive="{x:Bind ViewModel.IsBusy, Mode=OneWay}" Width="20" Height="20" />
+                <TextBlock x:Name="DevicesStatusText" Grid.Column="1" Text="{x:Bind ViewModel.Status, Mode=OneWay}"
+                           TextWrapping="Wrap" VerticalAlignment="Center" />
+            </Grid>
+    </Grid>
+</Page>

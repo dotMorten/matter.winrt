@@ -4,6 +4,7 @@ using Microsoft.UI.Xaml.Data;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Navigation;
+using MatterControllerApp.Services;
 
 // To learn more about WinUI, the WinUI project structure,
 // and more about our project templates, see: http://aka.ms/winui-project-info.
@@ -15,6 +16,8 @@ namespace MatterControllerApp;
 /// </summary>
 public partial class App : Application
 {
+    public static ControllerSession ControllerSession { get; } = new();
+    public static Task ControllerInitialization { get; private set; } = Task.CompletedTask;
     /// <summary>
     /// The main application window. Use <c>App.Window</c> from any class that needs
     /// the window reference (for dialogs, pickers, interop, etc.).
@@ -53,5 +56,6 @@ public partial class App : Application
         Window = new MainWindow();
         DispatcherQueue = Microsoft.UI.Dispatching.DispatcherQueue.GetForCurrentThread();
         Window.Activate();
+        ControllerInitialization = ControllerSession.InitializeAsync();
     }
 }

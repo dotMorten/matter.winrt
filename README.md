@@ -76,9 +76,12 @@ dotnet build .\samples\ControllerApp\MatterControllerApp.csproj `
     -p:Platform=ARM64 -p:PlatformTarget=ARM64
 ```
 
-The sample has separate pages for opening a commissioning window with a
-device's sharing code and for reading or controlling devices already persisted
-in the controller fabric.
+The sample initializes its persisted controller fabric when the app launches
+and closes it with the window. Its **Connect** page accepts a sharing code or
+BLE setup parameters and allocates local node identifiers automatically. Its
+**Devices** page selects from a dropdown of known devices, reads common
+clusters, queries generic attribute paths, and provides On/Off and Level
+Control commands.
 
 This is a development preview. Operational credentials are file-backed and
 test device attestation is enabled by default.
