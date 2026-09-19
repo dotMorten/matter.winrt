@@ -1692,20 +1692,34 @@ private:
 
     void LoadCommissionedNodes()
     {
-        uint16_t size = 0;
-        CHIP_ERROR error = mStorage.SyncGetKeyValue(kCommissionedNodesKey, nullptr, size);
-        if (error == CHIP_ERROR_PERSISTED_STORAGE_VALUE_NOT_FOUND)
+        constexpr size_t kMaximumNodeCount = UINT16_MAX / sizeof(uint64_t);
+        std::vector<uint64_t> nodes(1);
+        while (true)
         {
+            uint16_t size = static_cast<uint16_t>(nodes.size() * sizeof(uint64_t));
+            CHIP_ERROR error = mStorage.SyncGetKeyValue(kCommissionedNodesKey, nodes.data(), size);
+            if (error == CHIP_ERROR_PERSISTED_STORAGE_VALUE_NOT_FOUND)
+            {
+                return;
+            }
+            if (error == CHIP_ERROR_BUFFER_TOO_SMALL)
+            {
+                if (nodes.size() == kMaximumNodeCount)
+                {
+                    throw hresult_error(E_BOUNDS, L"The commissioned node index is too large.");
+                }
+                nodes.resize(std::min(nodes.size() * 2, kMaximumNodeCount));
+                continue;
+            }
+            CheckChipError(error, L"Read commissioned node index");
+            if (size == 0 || size % sizeof(uint64_t) != 0)
+            {
+                throw hresult_error(E_UNEXPECTED, L"The commissioned node index is invalid.");
+            }
+            nodes.resize(size / sizeof(uint64_t));
+            mCommissionedNodes = std::move(nodes);
             return;
         }
-        CheckChipError(error == CHIP_ERROR_BUFFER_TOO_SMALL ? CHIP_NO_ERROR : error, L"Read commissioned node index");
-        if (size == 0 || size % sizeof(uint64_t) != 0)
-        {
-            return;
-        }
-        mCommissionedNodes.resize(size / sizeof(uint64_t));
-        CheckChipError(mStorage.SyncGetKeyValue(kCommissionedNodesKey, mCommissionedNodes.data(), size),
-                       L"Read commissioned node index");
     }
 
     void PersistCommissionedNodes()

@@ -30,6 +30,7 @@ public sealed class QrCodeScanner
 
     public async Task<string> ScanAsync(
         string scannerId,
+        IProgress<string>? scanProgress = null,
         CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(scannerId);
@@ -51,7 +52,6 @@ public sealed class QrCodeScanner
         int scannerClosed = 0;
         bool previewShown = false;
         bool softwareTriggerStarted = false;
-        Task? previewTask = null;
 
         void OnDataReceived(
             ClaimedBarcodeScanner sender,
@@ -60,7 +60,12 @@ public sealed class QrCodeScanner
             string value = CryptographicBuffer.ConvertBinaryToString(
                 BinaryStringEncoding.Utf8,
                 args.Report.ScanDataLabel);
-            completion.TrySetResult(value.TrimEnd('\0', '\r', '\n'));
+            value = value.TrimEnd('\0', '\r', '\n');
+            if (!completion.Task.IsCompleted)
+            {
+                scanProgress?.Report(value);
+                completion.TrySetResult(value);
+            }
         }
 
         void OnClosed(
@@ -89,14 +94,8 @@ public sealed class QrCodeScanner
                 softwareTriggerStarted = true;
             }
             cancellationToken.ThrowIfCancellationRequested();
-            previewTask = claimedScanner.ShowVideoPreviewAsync().AsTask();
+            await claimedScanner.ShowVideoPreviewAsync();
             previewShown = true;
-            Task firstCompleted = await Task.WhenAny(completion.Task, previewTask);
-            if (firstCompleted == previewTask)
-            {
-                await previewTask;
-                completion.TrySetCanceled();
-            }
             return await completion.Task;
         }
         finally
@@ -108,7 +107,6 @@ public sealed class QrCodeScanner
                 if (previewShown)
                 {
                     claimedScanner.HideVideoPreview();
-                    await previewTask!;
                 }
                 if (softwareTriggerStarted)
                 {

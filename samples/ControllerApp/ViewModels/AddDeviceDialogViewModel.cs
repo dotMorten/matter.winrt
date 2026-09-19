@@ -146,9 +146,13 @@ public sealed class AddDeviceDialogViewModel : ObservableObject, IDisposable
         {
             throw new InvalidOperationException("A device connection is already in progress.");
         }
-        if (UsesSharingCode && string.IsNullOrWhiteSpace(SharingCode))
+        if (UsesSharingCode)
         {
-            throw new InvalidOperationException("Enter the device's sharing code.");
+            SharingCode = NormalizeSetupCode(SharingCode);
+            if (SharingCode.Length == 0)
+            {
+                throw new InvalidOperationException("Enter the device's sharing code.");
+            }
         }
         IsBusy = true;
         Status = UsesSharingCode
@@ -201,16 +205,23 @@ public sealed class AddDeviceDialogViewModel : ObservableObject, IDisposable
         Status = "Point the camera at the device's Matter QR code.";
         try
         {
+            Progress<string> scanProgress = new(value =>
+            {
+                if (value.StartsWith("MT:", StringComparison.Ordinal))
+                {
+                    ApplyScannedCode(value);
+                }
+            });
             string value = await new QrCodeScanner().ScanAsync(
                 SelectedCamera.ScannerId,
+                scanProgress,
                 scanCancellation.Token);
             if (!value.StartsWith("MT:", StringComparison.Ordinal))
             {
                 throw new InvalidDataException(
                     "The scanned QR code is not a Matter setup payload.");
             }
-            SharingCode = value;
-            Status = "Matter QR code scanned.";
+            ApplyScannedCode(value);
             return true;
         }
         catch (OperationCanceledException)
@@ -271,6 +282,24 @@ public sealed class AddDeviceDialogViewModel : ObservableObject, IDisposable
     {
         CancelQrScan();
         session.CommissioningProgress -= OnCommissioningProgress;
+    }
+
+    private void ApplyScannedCode(string value)
+    {
+        SharingCode = value;
+        Status = "Matter QR code scanned. Select Connect to continue.";
+    }
+
+    private static string NormalizeSetupCode(string value)
+    {
+        string trimmed = value.Trim();
+        if (trimmed.StartsWith("MT:", StringComparison.OrdinalIgnoreCase))
+        {
+            return string.Concat(trimmed.Where(character => !char.IsWhiteSpace(character)));
+        }
+
+        return string.Concat(trimmed.Where(character =>
+            character != '-' && !char.IsWhiteSpace(character)));
     }
 
     private void OnCommissioningProgress(object? sender, string message)
