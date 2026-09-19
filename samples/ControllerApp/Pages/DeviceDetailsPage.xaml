@@ -85,6 +85,13 @@
                                 Content="Toggle"
                                 Command="{x:Bind ViewModel.ToggleCommand}"
                                 AutomationProperties.AutomationId="ToggleDeviceButton" />
+                            <ToggleSwitch
+                                Header="Matter Controls widget"
+                                OffContent="Not included"
+                                OnContent="Included"
+                                IsOn="{x:Bind ViewModel.IsInWidget, Mode=OneWay}"
+                                Toggled="OnWidgetSelectionToggled"
+                                AutomationProperties.AutomationId="WidgetSelectionToggle" />
                         </StackPanel>
                     </StackPanel>
                 </Border>

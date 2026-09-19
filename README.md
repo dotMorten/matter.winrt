@@ -107,5 +107,14 @@ Devices that already contain this controller fabric but are missing from the
 local node index can be verified and restored by node ID without repeating
 AddNOC.
 
+The packaged sample also provides one shared **Matter Controls** Windows
+widget. On a device details page, turn on **Matter Controls widget** for any
+endpoint that exposes the On/Off cluster. Turn the switch off again to remove
+that endpoint. Open the Windows Widgets board, choose **Add widgets**, and pin
+**Matter Controls** once; every selected switch then appears in that medium or
+large widget and can be toggled without opening the app. Windows does not
+permit apps to pin widgets programmatically. The widget provider is an MSIX
+app extension, so it is not available from the unpackaged sample profile.
+
 This is a development preview. Operational credentials are file-backed and
 test device attestation is enabled by default.

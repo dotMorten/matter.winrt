@@ -40,6 +40,14 @@ public sealed partial class DeviceDetailsPage : Page
         }
     }
 
+    private async void OnWidgetSelectionToggled(object sender, RoutedEventArgs args)
+    {
+        if (sender is ToggleSwitch toggleSwitch)
+        {
+            await ViewModel.SetWidgetSelectionAsync(toggleSwitch.IsOn);
+        }
+    }
+
     private async void OnRemoveDeviceClicked(object sender, RoutedEventArgs args)
     {
         ContentDialog confirmation = new()

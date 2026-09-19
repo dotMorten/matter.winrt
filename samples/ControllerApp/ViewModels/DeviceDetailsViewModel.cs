@@ -11,6 +11,7 @@ namespace MatterControllerApp.ViewModels;
 public partial class DeviceDetailsViewModel : ObservableObject
 {
     private readonly ControllerSession session;
+    private readonly WidgetSelectionStore widgetSelectionStore = new();
 
     public DeviceDetailsViewModel(ControllerSession session)
     {
@@ -36,7 +37,13 @@ public partial class DeviceDetailsViewModel : ObservableObject
     public ushort EndpointId
     {
         get => endpointId;
-        set => SetProperty(ref endpointId, value);
+        set
+        {
+            if (SetProperty(ref endpointId, value))
+            {
+                UpdateWidgetSelectionState();
+            }
+        }
     }
 
     private string clusterId = "6";
@@ -72,6 +79,13 @@ public partial class DeviceDetailsViewModel : ObservableObject
     {
         get => hasOnOff;
         private set => SetProperty(ref hasOnOff, value);
+    }
+
+    private bool isInWidget;
+    public bool IsInWidget
+    {
+        get => isInWidget;
+        private set => SetProperty(ref isInWidget, value);
     }
 
     private bool hasLevelControl;
@@ -112,6 +126,7 @@ public partial class DeviceDetailsViewModel : ObservableObject
     public void Initialize(KnownDevice knownDevice)
     {
         Device = knownDevice;
+        UpdateWidgetSelectionState();
     }
 
     public async Task LoadAsync()
@@ -217,6 +232,52 @@ public partial class DeviceDetailsViewModel : ObservableObject
                 .MoveToLevelAsync(target, 0, 0, 0);
         });
 
+    public Task SetWidgetSelectionAsync(bool include)
+    {
+        if (Device is null || !HasOnOff)
+        {
+            OnPropertyChanged(nameof(IsInWidget));
+            return Task.CompletedTask;
+        }
+
+        if (include == IsInWidget)
+        {
+            return Task.CompletedTask;
+        }
+
+        try
+        {
+            if (include)
+            {
+                widgetSelectionStore.Add(new WidgetDevice(
+                    Device.NodeId,
+                    Device.FabricIndex,
+                    EndpointId,
+                    Device.DisplayName,
+                    IsOn));
+                Status =
+                    $"{Device.DisplayName} was added to Matter Controls. " +
+                    "Pin the widget from the Windows Widgets picker if needed.";
+            }
+            else
+            {
+                widgetSelectionStore.Remove(
+                    Device.FabricIndex,
+                    Device.NodeId,
+                    EndpointId);
+                Status = $"{Device.DisplayName} was removed from Matter Controls.";
+            }
+            IsInWidget = include;
+        }
+        catch (Exception exception)
+        {
+            Status = $"Could not update Matter Controls: {exception.Message}";
+            OnPropertyChanged(nameof(IsInWidget));
+        }
+
+        return Task.CompletedTask;
+    }
+
     public async Task<bool> RemoveAsync()
     {
         if (IsBusy)
@@ -312,5 +373,11 @@ public partial class DeviceDetailsViewModel : ObservableObject
         return Convert.ToString(value, CultureInfo.InvariantCulture) ??
             value.ToString() ??
             string.Empty;
+    }
+
+    private void UpdateWidgetSelectionState()
+    {
+        IsInWidget = Device is not null &&
+            widgetSelectionStore.Contains(Device.NodeId, EndpointId);
     }
 }

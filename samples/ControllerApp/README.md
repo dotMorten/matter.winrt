@@ -20,6 +20,27 @@ camera preview at it. The sample uses that code for multi-admin on-network
 commissioning, then persists the assigned node and can read Basic Information,
 On/Off, and Level Control state.
 
+## Windows widget
+
+The packaged app registers one shared **Matter Controls** widget. To add a
+switch:
+
+1. Open the device details page and select the endpoint that exposes On/Off.
+2. Turn on **Matter Controls widget** in the On/Off card. Turn it off to
+   remove that endpoint later.
+3. Open Windows Widgets, choose **Add widgets**, and pin **Matter Controls**.
+
+Windows requires the user to pin a widget and does not expose an API for the
+app to do so. Pin the widget only once; all selected On/Off endpoints appear
+in the same widget. The widget supports medium and large sizes, refreshes the
+current switch state when activated, and can issue On/Off toggles while the
+main app is closed. Connection failures are shown in the widget and the action
+can be retried.
+
+Windows Widgets requires the packaged MSIX profile. It is unavailable from the
+unpackaged profile because that profile does not register the widget provider
+app extension.
+
 Create the package from the repository root:
 
 ```powershell

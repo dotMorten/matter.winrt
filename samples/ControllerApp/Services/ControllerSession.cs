@@ -6,6 +6,7 @@ namespace MatterControllerApp.Services;
 
 public sealed class ControllerSession
 {
+    private readonly SemaphoreSlim lifecycleGate = new(1, 1);
     private readonly string storagePath = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
         "MatterControllerApp");
@@ -22,31 +23,39 @@ public sealed class ControllerSession
 
     public async Task InitializeAsync()
     {
-        if (Controller is not null)
-        {
-            return;
-        }
-
+        await lifecycleGate.WaitAsync();
         try
         {
-            LoadDeviceNames();
-            ControllerOptions options = new()
+            if (Controller is not null)
             {
-                StoragePath = storagePath,
-                AllowTestAttestation = true
-            };
-            Controller = await MatterController.CreateAsync(options);
-            Controller.CommissioningProgress += OnCommissioningProgress;
-            InitializationError = null;
-            NodesChanged?.Invoke(this, EventArgs.Empty);
-        }
-        catch (Exception exception)
-        {
-            InitializationError = exception.Message;
+                return;
+            }
+
+            try
+            {
+                LoadDeviceNames();
+                ControllerOptions options = new()
+                {
+                    StoragePath = storagePath,
+                    AllowTestAttestation = true
+                };
+                Controller = await MatterController.CreateAsync(options);
+                Controller.CommissioningProgress += OnCommissioningProgress;
+                InitializationError = null;
+                NodesChanged?.Invoke(this, EventArgs.Empty);
+            }
+            catch (Exception exception)
+            {
+                InitializationError = exception.Message;
+            }
+            finally
+            {
+                StateChanged?.Invoke(this, EventArgs.Empty);
+            }
         }
         finally
         {
-            StateChanged?.Invoke(this, EventArgs.Empty);
+            lifecycleGate.Release();
         }
     }
 
@@ -153,6 +162,7 @@ public sealed class ControllerSession
             {
                 deviceNames.Remove(GetDeviceKey(node.FabricIndex, node.NodeId));
                 await SaveDeviceNamesAsync();
+                new WidgetSelectionStore().RemoveNode(node.FabricIndex, node.NodeId);
             }
         }
         finally
@@ -163,16 +173,24 @@ public sealed class ControllerSession
 
     public async Task CloseAsync()
     {
-        if (Controller is null)
+        await lifecycleGate.WaitAsync();
+        try
         {
-            return;
-        }
+            if (Controller is null)
+            {
+                return;
+            }
 
-        Controller.CommissioningProgress -= OnCommissioningProgress;
-        await Controller.CloseAsync();
-        Controller = null;
-        NodesChanged?.Invoke(this, EventArgs.Empty);
-        StateChanged?.Invoke(this, EventArgs.Empty);
+            Controller.CommissioningProgress -= OnCommissioningProgress;
+            await Controller.CloseAsync();
+            Controller = null;
+            NodesChanged?.Invoke(this, EventArgs.Empty);
+            StateChanged?.Invoke(this, EventArgs.Empty);
+        }
+        finally
+        {
+            lifecycleGate.Release();
+        }
     }
 
     public MatterController RequireController() =>
