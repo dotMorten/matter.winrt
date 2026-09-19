@@ -3,7 +3,8 @@
     x:Class="MatterControllerApp.Pages.DeviceDetailsPage"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-    xmlns:local="using:MatterControllerApp.Pages">
+    xmlns:local="using:MatterControllerApp.Pages"
+    xmlns:viewModels="using:MatterControllerApp.ViewModels">
 
     <Grid Padding="36,24,36,36" RowSpacing="20">
         <Grid.RowDefinitions>
@@ -76,23 +77,70 @@
                     BorderThickness="1"
                     Visibility="{x:Bind local:DeviceDetailsPage.When(ViewModel.HasOnOff), Mode=OneWay}">
                     <StackPanel Spacing="12">
-                        <TextBlock Text="On/Off" Style="{StaticResource SubtitleTextBlockStyle}" />
-                        <StackPanel Orientation="Horizontal" Spacing="12">
+                        <TextBlock
+                            Text="Lights"
+                            Style="{StaticResource SubtitleTextBlockStyle}" />
+                        <Grid ColumnSpacing="12">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="80" />
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="180" />
+                            </Grid.ColumnDefinitions>
                             <TextBlock
-                                Text="{x:Bind local:DeviceDetailsPage.OnOffText(ViewModel.IsOn), Mode=OneWay}"
-                                VerticalAlignment="Center" />
-                            <Button
-                                Content="Toggle"
-                                Command="{x:Bind ViewModel.ToggleCommand}"
-                                AutomationProperties.AutomationId="ToggleDeviceButton" />
-                            <ToggleSwitch
-                                Header="Matter Controls widget"
-                                OffContent="Not included"
-                                OnContent="Included"
-                                IsOn="{x:Bind ViewModel.IsInWidget, Mode=OneWay}"
-                                Toggled="OnWidgetSelectionToggled"
-                                AutomationProperties.AutomationId="WidgetSelectionToggle" />
-                        </StackPanel>
+                                Text="Light"
+                                Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                            <TextBlock
+                                Grid.Column="1"
+                                Text="State"
+                                Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                            <TextBlock
+                                Grid.Column="2"
+                                Text="Control"
+                                Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                            <TextBlock
+                                Grid.Column="3"
+                                Text="Matter Controls widget"
+                                Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                        </Grid>
+                        <ItemsRepeater ItemsSource="{x:Bind ViewModel.OnOffEndpoints}">
+                            <ItemsRepeater.ItemTemplate>
+                                <DataTemplate x:DataType="viewModels:OnOffEndpointViewModel">
+                                    <Grid
+                                        Padding="0,6"
+                                        ColumnSpacing="12">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="80" />
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="180" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock
+                                            Text="{x:Bind DisplayName}"
+                                            VerticalAlignment="Center" />
+                                        <TextBlock
+                                            Grid.Column="1"
+                                            Text="{x:Bind local:DeviceDetailsPage.OnOffText(IsOn), Mode=OneWay}"
+                                            VerticalAlignment="Center" />
+                                        <Button
+                                            Grid.Column="2"
+                                            Content="Toggle"
+                                            Tag="{x:Bind}"
+                                            Click="OnEndpointToggleClicked"
+                                            AutomationProperties.AutomationId="{x:Bind ToggleAutomationId}" />
+                                        <ToggleSwitch
+                                            Grid.Column="3"
+                                            OffContent="Not included"
+                                            OnContent="Included"
+                                            Tag="{x:Bind}"
+                                            IsOn="{x:Bind IsInWidget, Mode=OneWay}"
+                                            Toggled="OnWidgetSelectionToggled"
+                                            AutomationProperties.Name="{x:Bind DisplayName}"
+                                            AutomationProperties.AutomationId="{x:Bind WidgetAutomationId}" />
+                                    </Grid>
+                                </DataTemplate>
+                            </ItemsRepeater.ItemTemplate>
+                        </ItemsRepeater>
                     </StackPanel>
                 </Border>
 

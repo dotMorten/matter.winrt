@@ -102,7 +102,8 @@ grid and provides an empty-state call to action when none are commissioned.
 **Add device** opens a manual sharing-code, camera QR-scanning, or Bluetooth LE
 workflow; after connection, the app suggests the device-reported name and lets
 the user edit it before finishing. Selecting a device opens its details page
-with discovered On/Off and Level controls plus generic attribute queries.
+with independently controllable rows for every discovered On/Off endpoint,
+Level controls, and generic attribute queries.
 Devices that already contain this controller fabric but are missing from the
 local node index can be verified and restored by node ID without repeating
 AddNOC.

@@ -4,6 +4,7 @@ using Matter.Windows.Controller;
 using MatterControllerApp.Models;
 using MatterControllerApp.Services;
 using System.Collections;
+using System.Collections.ObjectModel;
 using System.Globalization;
 
 namespace MatterControllerApp.ViewModels;
@@ -37,13 +38,7 @@ public partial class DeviceDetailsViewModel : ObservableObject
     public ushort EndpointId
     {
         get => endpointId;
-        set
-        {
-            if (SetProperty(ref endpointId, value))
-            {
-                UpdateWidgetSelectionState();
-            }
-        }
+        set => SetProperty(ref endpointId, value);
     }
 
     private string clusterId = "6";
@@ -60,13 +55,6 @@ public partial class DeviceDetailsViewModel : ObservableObject
         set => SetProperty(ref attributeId, value);
     }
 
-    private bool isOn;
-    public bool IsOn
-    {
-        get => isOn;
-        private set => SetProperty(ref isOn, value);
-    }
-
     private double level = 128;
     public double Level
     {
@@ -81,12 +69,7 @@ public partial class DeviceDetailsViewModel : ObservableObject
         private set => SetProperty(ref hasOnOff, value);
     }
 
-    private bool isInWidget;
-    public bool IsInWidget
-    {
-        get => isInWidget;
-        private set => SetProperty(ref isInWidget, value);
-    }
+    public ObservableCollection<OnOffEndpointViewModel> OnOffEndpoints { get; } = [];
 
     private bool hasLevelControl;
     public bool HasLevelControl
@@ -126,7 +109,6 @@ public partial class DeviceDetailsViewModel : ObservableObject
     public void Initialize(KnownDevice knownDevice)
     {
         Device = knownDevice;
-        UpdateWidgetSelectionState();
     }
 
     public async Task LoadAsync()
@@ -158,17 +140,7 @@ public partial class DeviceDetailsViewModel : ObservableObject
                 details.Add($"Basic Information unavailable: {exception.Message}");
             }
 
-            try
-            {
-                IsOn = await controller.GetOnOffCluster(Device.NodeId, EndpointId).ReadAsync();
-                HasOnOff = true;
-                details.Add($"On/Off: {(IsOn ? "On" : "Off")}");
-            }
-            catch (Exception exception)
-            {
-                HasOnOff = false;
-                details.Add($"On/Off unavailable on endpoint {EndpointId}: {exception.Message}");
-            }
+            await LoadOnOffEndpointsAsync(controller, details);
 
             try
             {
@@ -213,14 +185,18 @@ public partial class DeviceDetailsViewModel : ObservableObject
             QueryResult = FormatValue(value.Data);
         });
 
-    [RelayCommand]
-    private Task ToggleAsync() =>
-        RunAsync("Toggling device", async () =>
+    public Task ToggleEndpointAsync(OnOffEndpointViewModel endpoint) =>
+        RunAsync($"Toggling {endpoint.DisplayName}", async () =>
         {
             OnOffCluster cluster =
-                session.RequireController().GetOnOffCluster(RequireNodeId(), EndpointId);
+                session.RequireController().GetOnOffCluster(
+                    RequireNodeId(),
+                    endpoint.EndpointId);
             await cluster.ToggleAsync();
-            IsOn = await cluster.ReadAsync();
+            endpoint.IsOn = await cluster.ReadAsync();
+            widgetSelectionStore.UpdateState(
+                GetWidgetKey(endpoint.EndpointId),
+                endpoint.IsOn);
         });
 
     [RelayCommand]
@@ -232,15 +208,17 @@ public partial class DeviceDetailsViewModel : ObservableObject
                 .MoveToLevelAsync(target, 0, 0, 0);
         });
 
-    public Task SetWidgetSelectionAsync(bool include)
+    public Task SetWidgetSelectionAsync(
+        OnOffEndpointViewModel endpoint,
+        bool include)
     {
-        if (Device is null || !HasOnOff)
+        if (Device is null)
         {
-            OnPropertyChanged(nameof(IsInWidget));
+            endpoint.RestoreWidgetSelection();
             return Task.CompletedTask;
         }
 
-        if (include == IsInWidget)
+        if (include == endpoint.IsInWidget)
         {
             return Task.CompletedTask;
         }
@@ -252,11 +230,11 @@ public partial class DeviceDetailsViewModel : ObservableObject
                 widgetSelectionStore.Add(new WidgetDevice(
                     Device.NodeId,
                     Device.FabricIndex,
-                    EndpointId,
-                    Device.DisplayName,
-                    IsOn));
+                    endpoint.EndpointId,
+                    GetWidgetDisplayName(endpoint),
+                    endpoint.IsOn));
                 Status =
-                    $"{Device.DisplayName} was added to Matter Controls. " +
+                    $"{endpoint.DisplayName} was added to Matter Controls. " +
                     "Pin the widget from the Windows Widgets picker if needed.";
             }
             else
@@ -264,15 +242,15 @@ public partial class DeviceDetailsViewModel : ObservableObject
                 widgetSelectionStore.Remove(
                     Device.FabricIndex,
                     Device.NodeId,
-                    EndpointId);
-                Status = $"{Device.DisplayName} was removed from Matter Controls.";
+                    endpoint.EndpointId);
+                Status = $"{endpoint.DisplayName} was removed from Matter Controls.";
             }
-            IsInWidget = include;
+            endpoint.IsInWidget = include;
         }
         catch (Exception exception)
         {
             Status = $"Could not update Matter Controls: {exception.Message}";
-            OnPropertyChanged(nameof(IsInWidget));
+            endpoint.RestoreWidgetSelection();
         }
 
         return Task.CompletedTask;
@@ -331,6 +309,112 @@ public partial class DeviceDetailsViewModel : ObservableObject
     private ulong RequireNodeId() =>
         Device?.NodeId ?? throw new InvalidOperationException("No device was selected.");
 
+    private async Task LoadOnOffEndpointsAsync(
+        MatterController controller,
+        List<string> details)
+    {
+        OnOffEndpoints.Clear();
+        IReadOnlyList<ushort> endpointIds;
+        try
+        {
+            AttributeValue partsList = await controller.ReadAttributeAsync(
+                RequireNodeId(),
+                new AttributePath(0, 0x001D, 3));
+            endpointIds = DecodeEndpointIds(partsList.Data);
+        }
+        catch (Exception exception)
+        {
+            endpointIds = new ushort[] { EndpointId };
+            details.Add($"Endpoint discovery unavailable: {exception.Message}");
+        }
+
+        foreach (ushort discoveredEndpointId in endpointIds)
+        {
+            try
+            {
+                AttributeValue serverList = await controller.ReadAttributeAsync(
+                    RequireNodeId(),
+                    new AttributePath(discoveredEndpointId, 0x001D, 1));
+                if (!DecodeUnsignedList(serverList.Data, "Descriptor ServerList")
+                    .Contains(0x0006UL))
+                {
+                    continue;
+                }
+
+                bool endpointIsOn = await controller.GetOnOffCluster(
+                    RequireNodeId(),
+                    discoveredEndpointId).ReadAsync();
+                bool isInWidget = widgetSelectionStore.Contains(
+                    RequireNodeId(),
+                    discoveredEndpointId);
+                OnOffEndpointViewModel endpoint = new(
+                    discoveredEndpointId,
+                    endpointIsOn,
+                    isInWidget);
+                OnOffEndpoints.Add(endpoint);
+
+                if (isInWidget && Device is not null)
+                {
+                    widgetSelectionStore.Add(new WidgetDevice(
+                        Device.NodeId,
+                        Device.FabricIndex,
+                        discoveredEndpointId,
+                        GetWidgetDisplayName(endpoint),
+                        endpointIsOn));
+                    widgetSelectionStore.UpdateState(
+                        GetWidgetKey(discoveredEndpointId),
+                        endpointIsOn);
+                }
+            }
+            catch (Exception exception)
+            {
+                details.Add(
+                    $"Light {discoveredEndpointId} unavailable: {exception.Message}");
+            }
+        }
+
+        HasOnOff = OnOffEndpoints.Count > 0;
+        details.Add(HasOnOff
+            ? $"On/Off lights: {string.Join(", ", OnOffEndpoints.Select(endpoint => endpoint.DisplayName))}"
+            : "No On/Off light endpoints were found.");
+    }
+
+    private static IReadOnlyList<ushort> DecodeEndpointIds(
+        IDictionary<string, object> data)
+    {
+        return DecodeUnsignedList(data, "Descriptor PartsList")
+            .Where(endpointId => endpointId is > 0 and <= ushort.MaxValue)
+            .Select(endpointId => (ushort) endpointId)
+            .Distinct()
+            .Order()
+            .ToList();
+    }
+
+    private static IReadOnlyList<ulong> DecodeUnsignedList(
+        IDictionary<string, object> data,
+        string attributeName)
+    {
+        if (!data.TryGetValue("value", out object? value) ||
+            value is not IEnumerable values)
+        {
+            throw new InvalidDataException(
+                $"The {attributeName} response did not contain a list.");
+        }
+
+        List<ulong> result = [];
+        foreach (object item in values)
+        {
+            result.Add(Convert.ToUInt64(item, CultureInfo.InvariantCulture));
+        }
+        return result;
+    }
+
+    private string GetWidgetDisplayName(OnOffEndpointViewModel endpoint) =>
+        $"{DisplayName} — {endpoint.DisplayName}";
+
+    private string GetWidgetKey(ushort endpointId) =>
+        $"{Device?.FabricIndex}:{RequireNodeId()}:{endpointId}";
+
     private static uint ParseIdentifier(string text, string name)
     {
         NumberStyles style = text.StartsWith("0x", StringComparison.OrdinalIgnoreCase)
@@ -375,9 +459,4 @@ public partial class DeviceDetailsViewModel : ObservableObject
             string.Empty;
     }
 
-    private void UpdateWidgetSelectionState()
-    {
-        IsInWidget = Device is not null &&
-            widgetSelectionStore.Contains(Device.NodeId, EndpointId);
-    }
 }

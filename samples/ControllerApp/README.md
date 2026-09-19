@@ -7,7 +7,8 @@ accepts a manual multi-admin sharing code, scans a Matter QR code with a
 selected camera-backed barcode scanner, or commissions over Bluetooth LE. After
 connection it suggests the device-reported name and allows editing before the
 device appears in the list. Selecting a device opens generic attribute state,
-Basic Information, and available On/Off and Level Control commands.
+Basic Information, independently controllable rows for every On/Off endpoint,
+and available Level Control commands.
 
 If commissioning reports that the NOC or fabric already exists, the app
 automatically verifies operational access with the attempted node ID and

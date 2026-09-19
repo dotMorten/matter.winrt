@@ -40,11 +40,22 @@ public sealed partial class DeviceDetailsPage : Page
         }
     }
 
+    private async void OnEndpointToggleClicked(object sender, RoutedEventArgs args)
+    {
+        if (sender is Button { Tag: OnOffEndpointViewModel endpoint })
+        {
+            await ViewModel.ToggleEndpointAsync(endpoint);
+        }
+    }
+
     private async void OnWidgetSelectionToggled(object sender, RoutedEventArgs args)
     {
-        if (sender is ToggleSwitch toggleSwitch)
+        if (sender is ToggleSwitch
+            {
+                Tag: OnOffEndpointViewModel endpoint
+            } toggleSwitch)
         {
-            await ViewModel.SetWidgetSelectionAsync(toggleSwitch.IsOn);
+            await ViewModel.SetWidgetSelectionAsync(endpoint, toggleSwitch.IsOn);
         }
     }
 
