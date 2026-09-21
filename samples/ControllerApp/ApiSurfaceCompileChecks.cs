@@ -30,4 +30,26 @@ internal static class ApiSurfaceCompileChecks
             await controller.SubscribeEventAsync(nodeId, eventPath, 0, 1, 60);
         await eventSubscription.CloseAsync();
     }
+
+    internal static async Task ExerciseNetworkCommissioningAsync(MatterController controller)
+    {
+        var wiFi = new BleNetworkCommissioningParameters
+        {
+            NodeId = 1,
+            SetupPinCode = 20202021,
+            LongDiscriminator = 3840,
+            WiFi = new WiFiNetworkCredentials("network", "passphrase")
+        };
+        await new MatterControllerNetworkCommissioning(controller).CommissionBleAsync(wiFi);
+
+        var dataset = new Windows.Storage.Streams.Buffer(16) { Length = 16 };
+        var thread = new BleNetworkCommissioningParameters
+        {
+            NodeId = 2,
+            SetupPinCode = 20202021,
+            LongDiscriminator = 3840,
+            Thread = new ThreadNetworkCredentials(dataset)
+        };
+        await new MatterControllerNetworkCommissioning(controller).CommissionBleAsync(thread);
+    }
 }

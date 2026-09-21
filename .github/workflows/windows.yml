@@ -58,9 +58,9 @@ jobs:
           $archive = Join-Path $env:RUNNER_TEMP 'baseline.zip'
           $destination = Join-Path $env:RUNNER_TEMP 'baseline'
           Invoke-WebRequest `
-            -Uri 'https://github.com/dotMorten/matter.winrt/releases/download/v0.1.0-preview.6/Matter.Windows.Controller.0.1.0-preview.6.nupkg' `
+            -Uri 'https://github.com/dotMorten/matter.winrt/releases/download/v0.1.0-preview.8/Matter.Windows.Controller.0.1.0-preview.8.nupkg' `
             -OutFile $package
-          $expectedHash = '8DC16FB9707BADB8BAAF4CDCA4FB590FDDB12D55FA3796B7FE8EC4F4C4B02334'
+          $expectedHash = '82C970ECE9B76209F80EE694523A57F52E3106F03947A0E78D4D5BB376D40199'
           $actualHash = (Get-FileHash $package -Algorithm SHA256).Hash
           if ($actualHash -ne $expectedHash) {
             throw "Compatibility baseline hash mismatch. Expected $expectedHash; got $actualHash."

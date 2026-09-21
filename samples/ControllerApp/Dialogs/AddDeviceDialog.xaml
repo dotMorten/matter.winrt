@@ -68,27 +68,39 @@
                         AutomationProperties.AutomationId="AddDeviceSharingCode" />
                 </StackPanel>
 
-                <Grid
-                    ColumnSpacing="12"
+                <StackPanel
+                    Spacing="10"
                     Visibility="{x:Bind local:AddDeviceDialog.When(ViewModel.UsesBluetooth), Mode=OneWay}">
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="*" />
-                        <ColumnDefinition Width="*" />
-                    </Grid.ColumnDefinitions>
-                    <NumberBox
-                        Header="Setup PIN"
+                    <Grid ColumnSpacing="12">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <NumberBox
+                            Header="Setup PIN"
+                            IsEnabled="{x:Bind ViewModel.CanChangeConnection, Mode=OneWay}"
+                            Value="{x:Bind ViewModel.SetupPinCode, Mode=TwoWay}"
+                            SpinButtonPlacementMode="Compact"
+                            AutomationProperties.AutomationId="AddDeviceSetupPin" />
+                        <NumberBox
+                            Grid.Column="1"
+                            Header="Long discriminator"
+                            IsEnabled="{x:Bind ViewModel.CanChangeConnection, Mode=OneWay}"
+                            Value="{x:Bind ViewModel.LongDiscriminator, Mode=TwoWay}"
+                            SpinButtonPlacementMode="Compact"
+                            AutomationProperties.AutomationId="AddDeviceDiscriminator" />
+                    </Grid>
+                    <TextBox
+                        Header="Wi-Fi network name"
                         IsEnabled="{x:Bind ViewModel.CanChangeConnection, Mode=OneWay}"
-                        Value="{x:Bind ViewModel.SetupPinCode, Mode=TwoWay}"
-                        SpinButtonPlacementMode="Compact"
-                        AutomationProperties.AutomationId="AddDeviceSetupPin" />
-                    <NumberBox
-                        Grid.Column="1"
-                        Header="Long discriminator"
+                        Text="{x:Bind ViewModel.WiFiSsid, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                        AutomationProperties.AutomationId="AddDeviceWiFiSsid" />
+                    <PasswordBox
+                        Header="Wi-Fi password"
                         IsEnabled="{x:Bind ViewModel.CanChangeConnection, Mode=OneWay}"
-                        Value="{x:Bind ViewModel.LongDiscriminator, Mode=TwoWay}"
-                        SpinButtonPlacementMode="Compact"
-                        AutomationProperties.AutomationId="AddDeviceDiscriminator" />
-                </Grid>
+                        Password="{x:Bind ViewModel.WiFiPassphrase, Mode=TwoWay}"
+                        AutomationProperties.AutomationId="AddDeviceWiFiPassphrase" />
+                </StackPanel>
 
             </StackPanel>
 

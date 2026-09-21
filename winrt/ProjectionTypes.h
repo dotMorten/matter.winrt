@@ -2,6 +2,7 @@
 
 #include <winrt/Windows.Foundation.Collections.h>
 #include <winrt/Windows.Foundation.h>
+#include <winrt/Windows.Storage.Streams.h>
 
 #include "AttributePath.g.h"
 #include "AttributeReportEventArgs.g.h"
@@ -10,6 +11,7 @@
 #include "BasicInformation.g.h"
 #include "BasicInformationCluster.g.h"
 #include "BleCommissioningParameters.g.h"
+#include "BleNetworkCommissioningParameters.g.h"
 #include "CommandPath.g.h"
 #include "CommandResult.g.h"
 #include "CommissionedNode.g.h"
@@ -22,9 +24,12 @@
 #include "LevelControlCluster.g.h"
 #include "MatterController.g.h"
 #include "MatterControllerRecovery.g.h"
+#include "MatterControllerNetworkCommissioning.g.h"
 #include "OnNetworkCommissioningParameters.g.h"
 #include "OnOffCluster.g.h"
 #include "TimedInteractionOptions.g.h"
+#include "ThreadNetworkCredentials.g.h"
+#include "WiFiNetworkCredentials.g.h"
 
 #include <functional>
 #include <memory>
@@ -89,6 +94,52 @@ private:
     uint64_t mNodeId = 1;
     uint32_t mSetupPinCode = 20202021;
     uint16_t mLongDiscriminator = 3840;
+};
+
+struct WiFiNetworkCredentials : WiFiNetworkCredentialsT<WiFiNetworkCredentials>
+{
+    WiFiNetworkCredentials(hstring const & ssid, hstring const & passphrase);
+    ~WiFiNetworkCredentials();
+    uint32_t SsidLength() const;
+    uint32_t PassphraseLength() const;
+    std::vector<uint8_t> const & Ssid() const;
+    std::vector<uint8_t> const & Passphrase() const;
+
+private:
+    std::vector<uint8_t> mSsid;
+    std::vector<uint8_t> mPassphrase;
+};
+
+struct ThreadNetworkCredentials : ThreadNetworkCredentialsT<ThreadNetworkCredentials>
+{
+    explicit ThreadNetworkCredentials(Windows::Storage::Streams::IBuffer const & operationalDataset);
+    ~ThreadNetworkCredentials();
+    uint32_t DatasetLength() const;
+    std::vector<uint8_t> const & OperationalDataset() const;
+
+private:
+    std::vector<uint8_t> mOperationalDataset;
+};
+
+struct BleNetworkCommissioningParameters : BleNetworkCommissioningParametersT<BleNetworkCommissioningParameters>
+{
+    uint64_t NodeId() const;
+    void NodeId(uint64_t value);
+    uint32_t SetupPinCode() const;
+    void SetupPinCode(uint32_t value);
+    uint16_t LongDiscriminator() const;
+    void LongDiscriminator(uint16_t value);
+    Controller::WiFiNetworkCredentials WiFi() const;
+    void WiFi(Controller::WiFiNetworkCredentials const & value);
+    Controller::ThreadNetworkCredentials Thread() const;
+    void Thread(Controller::ThreadNetworkCredentials const & value);
+
+private:
+    uint64_t mNodeId = 1;
+    uint32_t mSetupPinCode = 20202021;
+    uint16_t mLongDiscriminator = 3840;
+    Controller::WiFiNetworkCredentials mWiFi{ nullptr };
+    Controller::ThreadNetworkCredentials mThread{ nullptr };
 };
 
 struct AttributePath : AttributePathT<AttributePath>
@@ -378,6 +429,16 @@ private:
     std::shared_ptr<ControllerRuntime> mRuntime;
 };
 
+struct MatterControllerNetworkCommissioning : MatterControllerNetworkCommissioningT<MatterControllerNetworkCommissioning>
+{
+    explicit MatterControllerNetworkCommissioning(Controller::MatterController controller);
+    Windows::Foundation::IAsyncOperation<Controller::CommissionedNode>
+    CommissionBleAsync(Controller::BleNetworkCommissioningParameters parameters);
+
+private:
+    std::shared_ptr<ControllerRuntime> mRuntime;
+};
+
 } // namespace winrt::Matter::Windows::Controller::implementation
 
 namespace winrt::Matter::Windows::Controller::factory_implementation {
@@ -390,6 +451,15 @@ struct OnNetworkCommissioningParameters :
 struct BleCommissioningParameters :
     BleCommissioningParametersT<BleCommissioningParameters, implementation::BleCommissioningParameters>
 {};
+struct BleNetworkCommissioningParameters :
+    BleNetworkCommissioningParametersT<BleNetworkCommissioningParameters, implementation::BleNetworkCommissioningParameters>
+{};
+struct WiFiNetworkCredentials :
+    WiFiNetworkCredentialsT<WiFiNetworkCredentials, implementation::WiFiNetworkCredentials>
+{};
+struct ThreadNetworkCredentials :
+    ThreadNetworkCredentialsT<ThreadNetworkCredentials, implementation::ThreadNetworkCredentials>
+{};
 struct AttributePath : AttributePathT<AttributePath, implementation::AttributePath>
 {};
 struct CommandPath : CommandPathT<CommandPath, implementation::CommandPath>
@@ -401,6 +471,10 @@ struct TimedInteractionOptions : TimedInteractionOptionsT<TimedInteractionOption
 struct MatterController : MatterControllerT<MatterController, implementation::MatterController>
 {};
 struct MatterControllerRecovery : MatterControllerRecoveryT<MatterControllerRecovery, implementation::MatterControllerRecovery>
+{};
+struct MatterControllerNetworkCommissioning :
+    MatterControllerNetworkCommissioningT<MatterControllerNetworkCommissioning,
+                                          implementation::MatterControllerNetworkCommissioning>
 {};
 
 } // namespace winrt::Matter::Windows::Controller::factory_implementation
