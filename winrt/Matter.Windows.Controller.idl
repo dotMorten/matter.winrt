@@ -1,4 +1,5 @@
 import "windows.foundation.idl";
+import "windows.storage.streams.idl";
 
 namespace Matter.Windows.Controller
 {
@@ -38,6 +39,29 @@ namespace Matter.Windows.Controller
         UInt64 NodeId { get; set; };
         UInt32 SetupPinCode { get; set; };
         UInt16 LongDiscriminator { get; set; };
+    };
+
+    runtimeclass WiFiNetworkCredentials
+    {
+        WiFiNetworkCredentials(String ssid, String passphrase);
+        UInt32 SsidLength { get; };
+        UInt32 PassphraseLength { get; };
+    };
+
+    runtimeclass ThreadNetworkCredentials
+    {
+        ThreadNetworkCredentials(Windows.Storage.Streams.IBuffer operationalDataset);
+        UInt32 DatasetLength { get; };
+    };
+
+    runtimeclass BleNetworkCommissioningParameters
+    {
+        BleNetworkCommissioningParameters();
+        UInt64 NodeId { get; set; };
+        UInt32 SetupPinCode { get; set; };
+        UInt16 LongDiscriminator { get; set; };
+        WiFiNetworkCredentials WiFi { get; set; };
+        ThreadNetworkCredentials Thread { get; set; };
     };
 
     runtimeclass CommissioningProgressEventArgs
@@ -184,5 +208,11 @@ namespace Matter.Windows.Controller
     {
         MatterControllerRecovery(MatterController controller);
         Windows.Foundation.IAsyncOperation<CommissionedNode> RecoverNodeAsync(UInt64 nodeId);
+    };
+
+    runtimeclass MatterControllerNetworkCommissioning
+    {
+        MatterControllerNetworkCommissioning(MatterController controller);
+        Windows.Foundation.IAsyncOperation<CommissionedNode> CommissionBleAsync(BleNetworkCommissioningParameters parameters);
     };
 }

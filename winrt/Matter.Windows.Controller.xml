@@ -86,6 +86,49 @@
       <summary>Gets or sets the device's 12-bit discriminator.</summary>
     </member>
 
+    <member name="T:Matter.Windows.Controller.WiFiNetworkCredentials">
+      <summary>Holds transient Wi-Fi credentials for one commissioning operation.</summary>
+    </member>
+    <member name="M:Matter.Windows.Controller.WiFiNetworkCredentials.#ctor(System.String,System.String)">
+      <summary>Copies a Wi-Fi SSID and passphrase into bounded native buffers. The native copies are cleared when this object is released.</summary><param name="ssid">The nonempty Wi-Fi SSID, limited to 32 UTF-8 bytes.</param><param name="passphrase">The Wi-Fi passphrase, or an empty string for an open network, limited to 64 UTF-8 bytes.</param>
+    </member>
+    <member name="P:Matter.Windows.Controller.WiFiNetworkCredentials.SsidLength">
+      <summary>Gets the SSID length in UTF-8 bytes without exposing its value.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.WiFiNetworkCredentials.PassphraseLength">
+      <summary>Gets the passphrase length in UTF-8 bytes without exposing its value.</summary>
+    </member>
+    <member name="T:Matter.Windows.Controller.ThreadNetworkCredentials">
+      <summary>Holds a transient Thread operational dataset for one commissioning operation.</summary>
+    </member>
+    <member name="M:Matter.Windows.Controller.ThreadNetworkCredentials.#ctor(Windows.Storage.Streams.IBuffer)">
+      <summary>Copies a Thread operational dataset into a bounded native buffer. The native copy is cleared when this object is released.</summary><param name="operationalDataset">A complete Thread operational dataset containing between 1 and 254 bytes. The caller may release or clear the source buffer after construction.</param>
+    </member>
+    <member name="P:Matter.Windows.Controller.ThreadNetworkCredentials.DatasetLength">
+      <summary>Gets the operational dataset length without exposing its contents.</summary>
+    </member>
+    <member name="T:Matter.Windows.Controller.BleNetworkCommissioningParameters">
+      <summary>Describes Bluetooth LE commissioning of a factory-reset Wi-Fi or Thread device.</summary>
+    </member>
+    <member name="M:Matter.Windows.Controller.BleNetworkCommissioningParameters.#ctor">
+      <summary>Creates Bluetooth LE network commissioning parameters.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.BleNetworkCommissioningParameters.NodeId">
+      <summary>Gets or sets the nonzero operational node identifier to assign to the device.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.BleNetworkCommissioningParameters.SetupPinCode">
+      <summary>Gets or sets the device setup PIN.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.BleNetworkCommissioningParameters.LongDiscriminator">
+      <summary>Gets or sets the device's 12-bit discriminator.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.BleNetworkCommissioningParameters.WiFi">
+      <summary>Gets or sets Wi-Fi credentials. Set exactly one of WiFi or Thread.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.BleNetworkCommissioningParameters.Thread">
+      <summary>Gets or sets Thread credentials. Set exactly one of WiFi or Thread.</summary>
+    </member>
+
     <member name="T:Matter.Windows.Controller.CommissioningProgressEventArgs">
       <summary>Provides commissioning stage and status text.</summary>
     </member>
@@ -256,6 +299,15 @@
     </member>
     <member name="M:Matter.Windows.Controller.MatterController.CommissionBleAsync(Matter.Windows.Controller.BleCommissioningParameters)">
       <summary>Commissions a device over Bluetooth LE.</summary><param name="parameters">BLE commissioning parameters.</param><returns>The persisted commissioned node.</returns>
+    </member>
+    <member name="T:Matter.Windows.Controller.MatterControllerNetworkCommissioning">
+      <summary>Adds factory-reset Wi-Fi or Thread devices through Bluetooth LE without changing the MatterController ABI.</summary>
+    </member>
+    <member name="M:Matter.Windows.Controller.MatterControllerNetworkCommissioning.#ctor(Matter.Windows.Controller.MatterController)">
+      <summary>Creates network commissioning operations for a controller.</summary><param name="controller">The controller that will own the commissioned node.</param>
+    </member>
+    <member name="M:Matter.Windows.Controller.MatterControllerNetworkCommissioning.CommissionBleAsync(Matter.Windows.Controller.BleNetworkCommissioningParameters)">
+      <summary>Commissions a factory-reset device over Bluetooth LE and supplies its Wi-Fi or Thread credentials during network configuration.</summary><param name="parameters">BLE and network commissioning parameters containing exactly one credential type.</param><returns>The persisted commissioned node.</returns>
     </member>
     <member name="P:Matter.Windows.Controller.MatterController.CommissionedNodes"><summary>Gets a snapshot of nodes persisted by this controller.</summary></member>
     <member name="M:Matter.Windows.Controller.MatterControllerRecovery.#ctor(Matter.Windows.Controller.MatterController)"><summary>Creates node recovery operations for a controller.</summary><param name="controller">The controller whose fabric contains the node.</param></member>

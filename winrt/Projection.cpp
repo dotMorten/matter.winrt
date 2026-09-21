@@ -15,6 +15,7 @@
 #include <credentials/GroupDataProviderImpl.h>
 #include <credentials/PersistentStorageOpCertStore.h>
 #include <credentials/attestation_verifier/DefaultDeviceAttestationVerifier.h>
+#include <crypto/CHIPCryptoPAL.h>
 #include <crypto/PersistentStorageOperationalKeystore.h>
 #include <crypto/RawKeySessionKeystore.h>
 #include <lib/support/CHIPMem.h>
@@ -55,6 +56,17 @@ constexpr auto kTimedInteractionMargin  = std::chrono::seconds(5);
 constexpr char kCommissionedNodesKey[] = "winrt/nodes";
 constexpr size_t kGenericTlvBufferSize = 64 * 1024;
 constexpr size_t kMaximumPendingReports = 256;
+
+std::vector<uint8_t> Utf8Bytes(hstring const & value)
+{
+    std::string encoded = to_string(value);
+    std::vector<uint8_t> bytes(encoded.begin(), encoded.end());
+    if (!encoded.empty())
+    {
+        Crypto::ClearSecretData(reinterpret_cast<uint8_t *>(encoded.data()), encoded.size());
+    }
+    return bytes;
+}
 
 std::chrono::milliseconds InteractionWaitTimeout(std::optional<uint16_t> timedInteractionTimeout)
 {
@@ -1182,7 +1194,9 @@ public:
     }
 
     Controller::CommissionedNode Commission(uint64_t nodeId, uint32_t pinCode, uint16_t discriminator, bool useBle,
-                                            std::string const & providedSetupCode = {})
+                                            std::string const & providedSetupCode = {},
+                                            std::optional<WiFiCredentials> const & wiFiCredentials = std::nullopt,
+                                            ByteSpan threadOperationalDataset = {})
     {
         std::scoped_lock operationLock(mOperationMutex);
         EnsureOpen();
@@ -1191,6 +1205,14 @@ public:
 
         CommissioningParameters parameters;
         parameters.SetDeviceAttestationDelegate(&mPairingDelegate);
+        if (wiFiCredentials.has_value())
+        {
+            parameters.SetWiFiCredentials(*wiFiCredentials);
+        }
+        if (!threadOperationalDataset.empty())
+        {
+            parameters.SetThreadOperationalDataset(threadOperationalDataset);
+        }
         PlatformMgr().LockChipStack();
         CHIP_ERROR error = mCommissioner.PairDevice(
             nodeId, setupCode.c_str(), parameters, useBle ? DiscoveryType::kDiscoveryBleOnly : DiscoveryType::kDiscoveryNetworkOnly);
@@ -1890,6 +1912,146 @@ uint16_t BleCommissioningParameters::LongDiscriminator() const
 void BleCommissioningParameters::LongDiscriminator(uint16_t value)
 {
     mLongDiscriminator = value;
+}
+
+WiFiNetworkCredentials::WiFiNetworkCredentials(hstring const & ssid, hstring const & passphrase)
+{
+    std::vector<uint8_t> encodedSsid       = Utf8Bytes(ssid);
+    std::vector<uint8_t> encodedPassphrase = Utf8Bytes(passphrase);
+    if (encodedSsid.empty() || encodedSsid.size() > CommissioningParameters::kMaxSsidLen ||
+        encodedPassphrase.size() > CommissioningParameters::kMaxCredentialsLen)
+    {
+        Crypto::ClearSecretData(encodedSsid.data(), encodedSsid.size());
+        Crypto::ClearSecretData(encodedPassphrase.data(), encodedPassphrase.size());
+        throw hresult_invalid_argument(
+            L"ssid must contain 1 to 32 UTF-8 bytes and passphrase must not exceed 64 UTF-8 bytes.");
+    }
+    mSsid       = std::move(encodedSsid);
+    mPassphrase = std::move(encodedPassphrase);
+}
+
+WiFiNetworkCredentials::~WiFiNetworkCredentials()
+{
+    if (!mSsid.empty())
+    {
+        Crypto::ClearSecretData(mSsid.data(), mSsid.size());
+    }
+    if (!mPassphrase.empty())
+    {
+        Crypto::ClearSecretData(mPassphrase.data(), mPassphrase.size());
+    }
+}
+
+uint32_t WiFiNetworkCredentials::SsidLength() const
+{
+    return static_cast<uint32_t>(mSsid.size());
+}
+
+uint32_t WiFiNetworkCredentials::PassphraseLength() const
+{
+    return static_cast<uint32_t>(mPassphrase.size());
+}
+
+std::vector<uint8_t> const & WiFiNetworkCredentials::Ssid() const
+{
+    return mSsid;
+}
+
+std::vector<uint8_t> const & WiFiNetworkCredentials::Passphrase() const
+{
+    return mPassphrase;
+}
+
+ThreadNetworkCredentials::ThreadNetworkCredentials(Windows::Storage::Streams::IBuffer const & operationalDataset)
+{
+    if (!operationalDataset)
+    {
+        throw hresult_invalid_argument(L"operationalDataset cannot be null.");
+    }
+    if (operationalDataset.Length() == 0 ||
+        operationalDataset.Length() > CommissioningParameters::kMaxThreadDatasetLen)
+    {
+        throw hresult_invalid_argument(L"operationalDataset must contain between 1 and 254 bytes.");
+    }
+    std::vector<uint8_t> dataset(operationalDataset.Length());
+    try
+    {
+        Windows::Storage::Streams::DataReader::FromBuffer(operationalDataset).ReadBytes(dataset);
+    }
+    catch (...)
+    {
+        Crypto::ClearSecretData(dataset.data(), dataset.size());
+        throw;
+    }
+    mOperationalDataset = std::move(dataset);
+}
+
+ThreadNetworkCredentials::~ThreadNetworkCredentials()
+{
+    if (!mOperationalDataset.empty())
+    {
+        Crypto::ClearSecretData(mOperationalDataset.data(), mOperationalDataset.size());
+    }
+}
+
+uint32_t ThreadNetworkCredentials::DatasetLength() const
+{
+    return static_cast<uint32_t>(mOperationalDataset.size());
+}
+
+std::vector<uint8_t> const & ThreadNetworkCredentials::OperationalDataset() const
+{
+    return mOperationalDataset;
+}
+
+uint64_t BleNetworkCommissioningParameters::NodeId() const
+{
+    return mNodeId;
+}
+
+void BleNetworkCommissioningParameters::NodeId(uint64_t value)
+{
+    mNodeId = value;
+}
+
+uint32_t BleNetworkCommissioningParameters::SetupPinCode() const
+{
+    return mSetupPinCode;
+}
+
+void BleNetworkCommissioningParameters::SetupPinCode(uint32_t value)
+{
+    mSetupPinCode = value;
+}
+
+uint16_t BleNetworkCommissioningParameters::LongDiscriminator() const
+{
+    return mLongDiscriminator;
+}
+
+void BleNetworkCommissioningParameters::LongDiscriminator(uint16_t value)
+{
+    mLongDiscriminator = value;
+}
+
+Controller::WiFiNetworkCredentials BleNetworkCommissioningParameters::WiFi() const
+{
+    return mWiFi;
+}
+
+void BleNetworkCommissioningParameters::WiFi(Controller::WiFiNetworkCredentials const & value)
+{
+    mWiFi = value;
+}
+
+Controller::ThreadNetworkCredentials BleNetworkCommissioningParameters::Thread() const
+{
+    return mThread;
+}
+
+void BleNetworkCommissioningParameters::Thread(Controller::ThreadNetworkCredentials const & value)
+{
+    mThread = value;
 }
 
 AttributePath::AttributePath(uint16_t endpointId, uint32_t clusterId, uint32_t attributeId) :
@@ -2632,6 +2794,52 @@ MatterControllerRecovery::MatterControllerRecovery(Controller::MatterController 
         throw hresult_invalid_argument(L"controller cannot be null.");
     }
     mRuntime = get_self<implementation::MatterController>(controller)->Runtime();
+}
+
+MatterControllerNetworkCommissioning::MatterControllerNetworkCommissioning(Controller::MatterController controller)
+{
+    if (!controller)
+    {
+        throw hresult_invalid_argument(L"controller cannot be null.");
+    }
+    mRuntime = get_self<implementation::MatterController>(controller)->Runtime();
+}
+
+Windows::Foundation::IAsyncOperation<Controller::CommissionedNode>
+MatterControllerNetworkCommissioning::CommissionBleAsync(Controller::BleNetworkCommissioningParameters parameters)
+{
+    if (!parameters)
+    {
+        throw hresult_invalid_argument(L"parameters cannot be null.");
+    }
+
+    auto wiFi  = parameters.WiFi();
+    auto thread = parameters.Thread();
+    if (static_cast<bool>(wiFi) == static_cast<bool>(thread))
+    {
+        throw hresult_invalid_argument(L"Provide exactly one Wi-Fi or Thread credential set.");
+    }
+
+    std::optional<WiFiCredentials> nativeWiFi;
+    ByteSpan threadDataset;
+    if (wiFi)
+    {
+        auto implementation = get_self<implementation::WiFiNetworkCredentials>(wiFi);
+        auto const & ssid       = implementation->Ssid();
+        auto const & passphrase = implementation->Passphrase();
+        nativeWiFi.emplace(ByteSpan(ssid.data(), ssid.size()), ByteSpan(passphrase.data(), passphrase.size()));
+    }
+    else
+    {
+        auto const & dataset = get_self<implementation::ThreadNetworkCredentials>(thread)->OperationalDataset();
+        threadDataset        = ByteSpan(dataset.data(), dataset.size());
+    }
+
+    uint64_t nodeId        = parameters.NodeId();
+    uint32_t setupPinCode  = parameters.SetupPinCode();
+    uint16_t discriminator = parameters.LongDiscriminator();
+    co_await resume_background();
+    co_return mRuntime->Commission(nodeId, setupPinCode, discriminator, true, {}, nativeWiFi, threadDataset);
 }
 
 Windows::Foundation::IAsyncAction MatterController::CloseAsync()

@@ -62,6 +62,20 @@ public sealed class AddDeviceDialogViewModel : ObservableObject, IDisposable
         set => SetProperty(ref longDiscriminator, value);
     }
 
+    private string wiFiSsid = string.Empty;
+    public string WiFiSsid
+    {
+        get => wiFiSsid;
+        set => SetProperty(ref wiFiSsid, value);
+    }
+
+    private string wiFiPassphrase = string.Empty;
+    public string WiFiPassphrase
+    {
+        get => wiFiPassphrase;
+        set => SetProperty(ref wiFiPassphrase, value);
+    }
+
     private string status = "Ready to connect.";
     public string Status
     {
@@ -154,6 +168,10 @@ public sealed class AddDeviceDialogViewModel : ObservableObject, IDisposable
                 throw new InvalidOperationException("Enter the device's sharing code.");
             }
         }
+        else if (string.IsNullOrWhiteSpace(WiFiSsid))
+        {
+            throw new InvalidOperationException("Enter the Wi-Fi network name.");
+        }
         IsBusy = true;
         Status = UsesSharingCode
             ? "Connecting with the sharing code…"
@@ -168,7 +186,9 @@ public sealed class AddDeviceDialogViewModel : ObservableObject, IDisposable
                     LongDiscriminator)
                 : await session.CommissionBleAsync(
                     SetupPinCode,
-                    LongDiscriminator);
+                    LongDiscriminator,
+                    WiFiSsid,
+                    WiFiPassphrase);
             DeviceName = connectedDevice.Device.DisplayName;
             OnPropertyChanged(nameof(IsConnecting));
             OnPropertyChanged(nameof(IsNaming));
@@ -182,6 +202,10 @@ public sealed class AddDeviceDialogViewModel : ObservableObject, IDisposable
         }
         finally
         {
+            if (UsesBluetooth)
+            {
+                WiFiPassphrase = string.Empty;
+            }
             IsBusy = false;
         }
     }

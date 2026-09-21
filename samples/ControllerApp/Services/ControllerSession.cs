@@ -96,18 +96,22 @@ public sealed class ControllerSession
 
     public async Task<AddedDeviceResult> CommissionBleAsync(
         uint setupPinCode,
-        ushort longDiscriminator)
+        ushort longDiscriminator,
+        string wiFiSsid,
+        string wiFiPassphrase)
     {
         MatterController controller = RequireController();
         ulong nodeId = AllocateNodeId(controller);
         CommissionedNode node;
         try
         {
-            node = await controller.CommissionBleAsync(new BleCommissioningParameters
+            node = await new MatterControllerNetworkCommissioning(controller).CommissionBleAsync(
+                new BleNetworkCommissioningParameters
             {
                 NodeId = nodeId,
                 SetupPinCode = setupPinCode,
-                LongDiscriminator = longDiscriminator
+                LongDiscriminator = longDiscriminator,
+                WiFi = new WiFiNetworkCredentials(wiFiSsid, wiFiPassphrase)
             });
         }
         catch (Exception exception) when (

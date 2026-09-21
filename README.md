@@ -85,7 +85,7 @@ repository is not a GN source tree and does not create directory junctions to
 the SDK.
 
 The build produces
-`artifacts\Matter.Windows.Controller.0.1.0-preview.8.nupkg`. The package
+`artifacts\Matter.Windows.Controller.0.1.0-preview.9.nupkg`. The package
 contains a WinMD plus architecture-specific native DLLs for `win-x64` and
 `win-arm64`.
 
