@@ -120,7 +120,7 @@ public sealed class ControllerSession
 
     public async Task<AddedDeviceResult> RecoverNodeAsync(ulong nodeId)
     {
-        CommissionedNode node = await RequireController().RecoverNodeAsync(nodeId);
+        CommissionedNode node = await new MatterControllerRecovery(RequireController()).RecoverNodeAsync(nodeId);
         return await RegisterCommissionedNodeAsync(node);
     }
 
@@ -259,7 +259,7 @@ public sealed class ControllerSession
     {
         try
         {
-            return await controller.RecoverNodeAsync(nodeId);
+            return await new MatterControllerRecovery(controller).RecoverNodeAsync(nodeId);
         }
         catch (Exception recoveryException)
         {

@@ -2487,13 +2487,6 @@ Windows::Foundation::Collections::IVectorView<Controller::CommissionedNode> Matt
     return single_threaded_vector(std::move(nodes)).GetView();
 }
 
-Windows::Foundation::IAsyncOperation<Controller::CommissionedNode> MatterController::RecoverNodeAsync(uint64_t nodeId)
-{
-    auto runtime = Runtime();
-    co_await resume_background();
-    co_return runtime->RecoverNode(nodeId);
-}
-
 Windows::Foundation::IAsyncAction MatterController::RemoveNodeAsync(uint64_t nodeId)
 {
     auto runtime = Runtime();
@@ -2623,6 +2616,22 @@ Controller::LevelControlCluster MatterController::GetLevelControlCluster(uint64_
 Controller::BasicInformationCluster MatterController::GetBasicInformationCluster(uint64_t nodeId, uint16_t endpointId)
 {
     return winrt::make<BasicInformationCluster>(Runtime(), nodeId, endpointId);
+}
+
+Windows::Foundation::IAsyncOperation<Controller::CommissionedNode>
+MatterControllerRecovery::RecoverNodeAsync(uint64_t nodeId)
+{
+    co_await resume_background();
+    co_return mRuntime->RecoverNode(nodeId);
+}
+
+MatterControllerRecovery::MatterControllerRecovery(Controller::MatterController controller)
+{
+    if (!controller)
+    {
+        throw hresult_invalid_argument(L"controller cannot be null.");
+    }
+    mRuntime = get_self<implementation::MatterController>(controller)->Runtime();
 }
 
 Windows::Foundation::IAsyncAction MatterController::CloseAsync()

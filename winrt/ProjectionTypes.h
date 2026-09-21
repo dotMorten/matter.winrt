@@ -21,6 +21,7 @@
 #include "EventValue.g.h"
 #include "LevelControlCluster.g.h"
 #include "MatterController.g.h"
+#include "MatterControllerRecovery.g.h"
 #include "OnNetworkCommissioningParameters.g.h"
 #include "OnOffCluster.g.h"
 #include "TimedInteractionOptions.g.h"
@@ -334,7 +335,6 @@ struct MatterController : MatterControllerT<MatterController>
     Windows::Foundation::IAsyncOperation<Controller::CommissionedNode>
     CommissionBleAsync(Controller::BleCommissioningParameters parameters);
     Windows::Foundation::Collections::IVectorView<Controller::CommissionedNode> CommissionedNodes();
-    Windows::Foundation::IAsyncOperation<Controller::CommissionedNode> RecoverNodeAsync(uint64_t nodeId);
     Windows::Foundation::IAsyncAction RemoveNodeAsync(uint64_t nodeId);
     Windows::Foundation::IAsyncOperation<Controller::AttributeValue> ReadAttributeAsync(uint64_t nodeId,
                                                                                         Controller::AttributePath path);
@@ -360,14 +360,22 @@ struct MatterController : MatterControllerT<MatterController>
     Controller::LevelControlCluster GetLevelControlCluster(uint64_t nodeId, uint16_t endpointId);
     Controller::BasicInformationCluster GetBasicInformationCluster(uint64_t nodeId, uint16_t endpointId);
     Windows::Foundation::IAsyncAction CloseAsync();
-
-private:
     std::shared_ptr<ControllerRuntime> Runtime();
 
+private:
     std::mutex mRuntimeMutex;
     std::shared_ptr<ControllerRuntime> mRuntime;
     winrt::event<Windows::Foundation::TypedEventHandler<Controller::MatterController, Controller::CommissioningProgressEventArgs>>
         mCommissioningProgress;
+};
+
+struct MatterControllerRecovery : MatterControllerRecoveryT<MatterControllerRecovery>
+{
+    explicit MatterControllerRecovery(Controller::MatterController controller);
+    Windows::Foundation::IAsyncOperation<Controller::CommissionedNode> RecoverNodeAsync(uint64_t nodeId);
+
+private:
+    std::shared_ptr<ControllerRuntime> mRuntime;
 };
 
 } // namespace winrt::Matter::Windows::Controller::implementation
@@ -391,6 +399,8 @@ struct EventPath : EventPathT<EventPath, implementation::EventPath>
 struct TimedInteractionOptions : TimedInteractionOptionsT<TimedInteractionOptions, implementation::TimedInteractionOptions>
 {};
 struct MatterController : MatterControllerT<MatterController, implementation::MatterController>
+{};
+struct MatterControllerRecovery : MatterControllerRecoveryT<MatterControllerRecovery, implementation::MatterControllerRecovery>
 {};
 
 } // namespace winrt::Matter::Windows::Controller::factory_implementation
