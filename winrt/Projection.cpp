@@ -51,6 +51,7 @@ using namespace chip::DeviceLayer;
 
 constexpr FabricId kControllerFabricId = 1;
 constexpr auto kCommissioningTimeout    = std::chrono::seconds(120);
+constexpr auto kCommissioningFailureDetailTimeout = std::chrono::milliseconds(100);
 constexpr auto kInteractionTimeout      = std::chrono::seconds(30);
 constexpr auto kTimedInteractionMargin  = std::chrono::seconds(5);
 constexpr char kCommissionedNodesKey[] = "winrt/nodes";
@@ -343,7 +344,101 @@ struct PairingState
     std::condition_variable condition;
     bool complete = false;
     CHIP_ERROR error = CHIP_NO_ERROR;
+    Optional<chip::Controller::CommissioningStage> activeStage;
+    Optional<chip::Controller::CommissioningStage> lastCompletedStage;
+    CompletionStatus completionStatus;
+    bool hasCompletionStatus = false;
 };
+
+void AppendStage(std::wstring & message, wchar_t const * label, Optional<chip::Controller::CommissioningStage> stage)
+{
+    if (!stage.HasValue())
+    {
+        return;
+    }
+
+    chip::Controller::CommissioningStage value = stage.Value();
+    char const * name                           = StageToString(value);
+    message.append(L" ");
+    message.append(label);
+    message.append(L": ");
+    if (name != nullptr && name[0] != '\0')
+    {
+        message.append(to_hstring(name).c_str());
+        message.append(L" (");
+        message.append(std::to_wstring(static_cast<uint16_t>(value)));
+        message.append(L")");
+    }
+    else
+    {
+        message.append(std::to_wstring(static_cast<uint16_t>(value)));
+    }
+    message.append(L".");
+}
+
+void AppendDeviceDebugText(std::wstring & message, wchar_t const * label, std::string const & text)
+{
+    if (!text.empty())
+    {
+        message.append(L" ");
+        message.append(label);
+        message.append(L": ");
+        message.append(to_hstring(text).c_str());
+        message.append(L".");
+    }
+}
+
+std::wstring CommissioningTimeoutMessage(PairingState const & state)
+{
+    std::wstring message = L"Matter commissioning timed out.";
+    AppendStage(message, L"Active stage", state.activeStage);
+    AppendStage(message, L"Last completed stage", state.lastCompletedStage);
+    return message;
+}
+
+[[noreturn]] void ThrowCommissioningError(PairingState const & state)
+{
+    std::wstring message = L"Commission device: ";
+    message.append(to_hstring(state.error.AsString()).c_str());
+    message.append(L".");
+    AppendStage(message, L"Failed stage", state.completionStatus.failedStage);
+    AppendStage(message, L"Active stage", state.activeStage);
+    AppendStage(message, L"Last completed stage", state.lastCompletedStage);
+
+    if (state.completionStatus.commissioningError.HasValue())
+    {
+        message.append(L" Commissioning error: ");
+        message.append(std::to_wstring(static_cast<uint8_t>(state.completionStatus.commissioningError.Value())));
+        message.append(L".");
+    }
+    if (state.completionStatus.networkCommissioningStatus.HasValue())
+    {
+        message.append(L" Network commissioning status: ");
+        message.append(std::to_wstring(static_cast<uint8_t>(state.completionStatus.networkCommissioningStatus.Value())));
+        message.append(L".");
+    }
+    if (state.completionStatus.connectNetworkErrorValue.HasValue())
+    {
+        message.append(L" Connect network error: ");
+        message.append(std::to_wstring(state.completionStatus.connectNetworkErrorValue.Value()));
+        message.append(L".");
+    }
+    if (state.completionStatus.operationalCertStatus.HasValue())
+    {
+        message.append(L" Operational certificate status: ");
+        message.append(std::to_wstring(static_cast<uint8_t>(state.completionStatus.operationalCertStatus.Value())));
+        message.append(L".");
+    }
+    if (state.completionStatus.attestationResult.HasValue())
+    {
+        message.append(L" Attestation result: ");
+        message.append(std::to_wstring(static_cast<uint16_t>(state.completionStatus.attestationResult.Value())));
+        message.append(L".");
+    }
+    AppendDeviceDebugText(message, L"Commissioning debug text", state.completionStatus.commissioningDebugText);
+    AppendDeviceDebugText(message, L"Network commissioning debug text", state.completionStatus.networkCommissioningDebugText);
+    throw hresult_error(HRESULT_FROM_WIN32(ERROR_GEN_FAILURE), message);
+}
 
 class PairingDelegate final : public DevicePairingDelegate, public Credentials::DeviceAttestationDelegate
 {
@@ -353,18 +448,42 @@ public:
     void Reset()
     {
         std::scoped_lock lock(mState.mutex);
-        mState.complete = false;
-        mState.error    = CHIP_NO_ERROR;
+        mState.complete               = false;
+        mState.error                  = CHIP_NO_ERROR;
+        mState.activeStage            = NullOptional;
+        mState.lastCompletedStage     = NullOptional;
+        mState.completionStatus       = CompletionStatus();
+        mState.hasCompletionStatus    = false;
     }
 
     void OnCommissioningComplete(NodeId, CHIP_ERROR error) override
     {
+        Complete(error);
+    }
+
+    void OnCommissioningFailure(PeerId, const CompletionStatus & completionStatus) override
+    {
         {
             std::scoped_lock lock(mState.mutex);
-            mState.complete = true;
-            mState.error    = error;
+            mState.completionStatus    = completionStatus;
+            mState.hasCompletionStatus = true;
+            mState.error               = completionStatus.err;
+            mState.complete            = true;
         }
         mState.condition.notify_all();
+    }
+
+    void OnCommissioningStageStart(PeerId, chip::Controller::CommissioningStage stageStarting) override
+    {
+        std::scoped_lock lock(mState.mutex);
+        mState.activeStage = MakeOptional(stageStarting);
+    }
+
+    void OnCommissioningStatusUpdate(PeerId, chip::Controller::CommissioningStage stageCompleted, CHIP_ERROR) override
+    {
+        std::scoped_lock lock(mState.mutex);
+        mState.lastCompletedStage = MakeOptional(stageCompleted);
+        mState.activeStage        = NullOptional;
     }
 
     Optional<uint16_t> FailSafeExpiryTimeoutSecs() const override { return NullOptional; }
@@ -375,7 +494,7 @@ public:
     {
         if (result != Credentials::AttestationVerificationResult::kSuccess && !mAllowTestAttestation)
         {
-            OnCommissioningComplete(kUndefinedNodeId, CHIP_ERROR_CERT_NOT_TRUSTED);
+            Complete(CHIP_ERROR_CERT_NOT_TRUSTED);
             return;
         }
 
@@ -383,11 +502,21 @@ public:
             commissioner->ContinueCommissioningAfterDeviceAttestation(device, Credentials::AttestationVerificationResult::kSuccess);
         if (error != CHIP_NO_ERROR)
         {
-            OnCommissioningComplete(kUndefinedNodeId, error);
+            Complete(error);
         }
     }
 
 private:
+    void Complete(CHIP_ERROR error)
+    {
+        {
+            std::scoped_lock lock(mState.mutex);
+            mState.complete = true;
+            mState.error    = error;
+        }
+        mState.condition.notify_all();
+    }
+
     PairingState & mState;
     bool mAllowTestAttestation;
 };
@@ -1222,11 +1351,21 @@ public:
         std::unique_lock lock(mPairingState.mutex);
         if (!mPairingState.condition.wait_for(lock, kCommissioningTimeout, [this]() { return mPairingState.complete; }))
         {
+            std::wstring timeoutMessage = CommissioningTimeoutMessage(mPairingState);
             lock.unlock();
             PlatformMgr().LockChipStack();
             (void) mCommissioner.StopPairing(nodeId);
             PlatformMgr().UnlockChipStack();
-            throw hresult_error(HRESULT_FROM_WIN32(ERROR_TIMEOUT), L"Matter commissioning timed out.");
+            throw hresult_error(HRESULT_FROM_WIN32(ERROR_TIMEOUT), timeoutMessage);
+        }
+        if (mPairingState.error != CHIP_NO_ERROR && !mPairingState.hasCompletionStatus)
+        {
+            (void) mPairingState.condition.wait_for(lock, kCommissioningFailureDetailTimeout,
+                                                    [this]() { return mPairingState.hasCompletionStatus; });
+        }
+        if (mPairingState.error != CHIP_NO_ERROR && mPairingState.hasCompletionStatus)
+        {
+            ThrowCommissioningError(mPairingState);
         }
         CheckChipError(mPairingState.error, L"Commission device");
         if (std::find(mCommissionedNodes.begin(), mCommissionedNodes.end(), nodeId) == mCommissionedNodes.end())
