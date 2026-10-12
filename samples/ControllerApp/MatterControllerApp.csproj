@@ -20,6 +20,10 @@
     <DefineConstants>$(DefineConstants);DISABLE_XAML_GENERATED_MAIN</DefineConstants>
     <WindowsPackageType Condition="'$(Unpackaged)' == 'true'">None</WindowsPackageType>
     <WindowsAppSDKSelfContained Condition="'$(Unpackaged)' == 'true'">true</WindowsAppSDKSelfContained>
+    <MatterControllerPackageVersion Condition="'$(MatterControllerPackageVersion)' == ''">0.1.0-preview.9</MatterControllerPackageVersion>
+    <MatterCameraDevelopment Condition="'$(MatterCameraDevelopmentRoot)' != ''">true</MatterCameraDevelopment>
+    <DefineConstants Condition="'$(MatterCameraDevelopment)' == 'true'">$(DefineConstants);MATTER_CAMERA_DEVELOPMENT</DefineConstants>
+    <CsWinRTIncludes Condition="'$(MatterCameraDevelopmentRoot)' != ''">Matter.Windows.Controller</CsWinRTIncludes>
   </PropertyGroup>
 
   <ItemGroup>
@@ -62,8 +66,24 @@
     <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.2" />
     <PackageReference Include="Microsoft.Windows.CsWinRT" Version="2.3.1" />
     <PackageReference Include="Microsoft.Windows.SDK.BuildTools.WinApp" Version="0.6.1" />
-    <PackageReference Include="Matter.Windows.Controller" Version="0.1.0-preview.9" />
+    <PackageReference Include="Matter.Windows.Controller" Version="$(MatterControllerPackageVersion)" Condition="'$(MatterCameraDevelopmentRoot)' == ''" />
     <PackageReference Include="WinUIEx" Version="2.9.3" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(MatterCameraDevelopmentRoot)' != ''">
+    <CsWinRTInputs Include="$(MatterCameraDevelopmentRoot)\out\win-winrt-$(Platform)\Matter.Windows.Controller.winmd" />
+    <Content Include="$(MatterCameraDevelopmentRoot)\out\win-winrt-$(Platform)\Matter.Windows.Controller.dll">
+      <Link>Matter.Windows.Controller.dll</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </Content>
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(MatterCameraDevelopment)' == 'true'">
+    <Content Include="Camera\receiver.html;Camera\receiver.js;Camera\receiver.css">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </Content>
   </ItemGroup>
 
   <!--

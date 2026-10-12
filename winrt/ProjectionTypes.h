@@ -23,6 +23,21 @@
 #include "EventValue.g.h"
 #include "LevelControlCluster.g.h"
 #include "MatterController.g.h"
+#include "MatterControllerCameraDiscovery.g.h"
+#include "MatterControllerCamera.g.h"
+#include "MatterCameraSession.g.h"
+#include "MatterCameraSignal.g.h"
+#include "MatterCameraIceCandidate.g.h"
+#include "MatterCameraIceServer.g.h"
+#include "MatterCameraVideoStream.g.h"
+#include "MatterCameraFailure.g.h"
+#include "MatterCameraStartResult.g.h"
+#include "MatterCameraOperationResult.g.h"
+#include "MatterCameraDiscoveryResult.g.h"
+#include "MatterCameraClusterCapabilities.g.h"
+#include "MatterCameraCapabilities.g.h"
+#include "MatterDeviceType.g.h"
+#include "MatterEndpointDescriptor.g.h"
 #include "MatterControllerRecovery.g.h"
 #include "MatterControllerNetworkCommissioning.g.h"
 #include "OnNetworkCommissioningParameters.g.h"
@@ -32,8 +47,10 @@
 #include "WiFiNetworkCredentials.g.h"
 
 #include <functional>
+#include <atomic>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <vector>
 
 namespace winrt::Matter::Windows::Controller::implementation {
@@ -52,12 +69,15 @@ struct ControllerOptions : ControllerOptionsT<ControllerOptions>
     void BluetoothAdapterId(uint32_t value);
     bool AllowTestAttestation() const;
     void AllowTestAttestation(bool value);
+    bool EnableCameraSignaling() const { return mEnableCameraSignaling; }
+    void EnableCameraSignaling(bool value) { mEnableCameraSignaling = value; }
 
 private:
     hstring mStoragePath;
     uint64_t mControllerNodeId = 112233;
     uint32_t mBluetoothAdapterId = 0;
     bool mAllowTestAttestation = true;
+    bool mEnableCameraSignaling = false;
 };
 
 struct OnNetworkCommissioningParameters : OnNetworkCommissioningParametersT<OnNetworkCommissioningParameters>
@@ -420,6 +440,275 @@ private:
         mCommissioningProgress;
 };
 
+struct MatterCameraIceCandidate : MatterCameraIceCandidateT<MatterCameraIceCandidate>
+{
+    MatterCameraIceCandidate(hstring candidate, hstring mid, int32_t lineIndex);
+    hstring Candidate() const { return mCandidate; }
+    hstring Mid() const { return mMid; }
+    int32_t LineIndex() const { return mLineIndex; }
+private:
+    hstring mCandidate;
+    hstring mMid;
+    int32_t mLineIndex;
+};
+
+struct MatterCameraSignal : MatterCameraSignalT<MatterCameraSignal>
+{
+    MatterCameraSignal(uint64_t handle, Controller::MatterCameraSignalKind kind, hstring sdp,
+                      std::vector<Controller::MatterCameraIceCandidate> candidates, uint32_t error,
+                      std::optional<uint16_t> protocolId, uint8_t reason);
+    uint64_t SessionHandle() const { return mHandle; }
+    Controller::MatterCameraSignalKind Kind() const { return mKind; }
+    hstring Sdp() const { return mSdp; }
+    Windows::Foundation::Collections::IVectorView<Controller::MatterCameraIceCandidate> Candidates() const { return mCandidates; }
+    uint32_t NativeError() const { return mError; }
+    Windows::Foundation::IReference<uint16_t> ProtocolSessionId() const { return mProtocolId; }
+    uint8_t EndReason() const { return mReason; }
+private:
+    uint64_t mHandle;
+    Controller::MatterCameraSignalKind mKind;
+    hstring mSdp;
+    Windows::Foundation::Collections::IVectorView<Controller::MatterCameraIceCandidate> mCandidates;
+    uint32_t mError;
+    Windows::Foundation::IReference<uint16_t> mProtocolId{ nullptr };
+    uint8_t mReason;
+};
+
+struct MatterCameraSession : MatterCameraSessionT<MatterCameraSession>
+{
+    MatterCameraSession(std::shared_ptr<ControllerRuntime> runtime, uint64_t handle, uint64_t node,
+                       uint16_t endpoint, uint16_t requestor);
+    uint64_t Handle() const { return mHandle; }
+    uint64_t NodeId() const { return mNode; }
+    uint16_t CameraEndpointId() const { return mEndpoint; }
+    uint16_t RequestorEndpointId() const { return mRequestor; }
+    Windows::Foundation::IAsyncOperation<Controller::MatterCameraSessionState> GetStateAsync();
+    Windows::Foundation::IAsyncOperation<Controller::MatterCameraSignal> WaitForSignalAsync(uint32_t timeoutMilliseconds);
+    Windows::Foundation::IAsyncAction SendCandidatesAsync(
+        Windows::Foundation::Collections::IVectorView<Controller::MatterCameraIceCandidate> candidates);
+    Windows::Foundation::IAsyncAction CloseAsync();
+    Windows::Foundation::IAsyncOperation<Controller::MatterCameraOperationResult> TrySendCandidatesAsync(
+        Windows::Foundation::Collections::IVectorView<Controller::MatterCameraIceCandidate> candidates);
+    Windows::Foundation::IAsyncOperation<Controller::MatterCameraOperationResult> TryCloseAsync();
+private:
+    std::shared_ptr<ControllerRuntime> mRuntime;
+    uint64_t mHandle;
+    uint64_t mNode;
+    uint16_t mEndpoint;
+    uint16_t mRequestor;
+    std::atomic_bool mWaiting{ false };
+    std::atomic_uint32_t mClosing{ 0 };
+};
+
+struct MatterCameraIceServer : MatterCameraIceServerT<MatterCameraIceServer>
+{
+    MatterCameraIceServer(Windows::Foundation::Collections::IVectorView<hstring> urls,
+        bool hasUsername, hstring username, bool hasCredential, hstring credential,
+        Windows::Foundation::IReference<uint16_t> certificateAuthorityId);
+    Windows::Foundation::Collections::IVectorView<hstring> Urls() const { return mUrls; }
+    bool HasUsername() const { return mHasUsername; }
+    hstring Username() const { return mUsername; }
+    bool HasCredential() const { return mHasCredential; }
+    hstring Credential() const { return mCredential; }
+    Windows::Foundation::IReference<uint16_t> CertificateAuthorityId() const { return mCertificateAuthorityId; }
+private:
+    Windows::Foundation::Collections::IVectorView<hstring> mUrls;
+    bool mHasUsername;
+    hstring mUsername;
+    bool mHasCredential;
+    hstring mCredential;
+    Windows::Foundation::IReference<uint16_t> mCertificateAuthorityId{ nullptr };
+};
+
+struct MatterControllerCamera : MatterControllerCameraT<MatterControllerCamera>
+{
+    explicit MatterControllerCamera(Controller::MatterController controller);
+    static bool IsSignalingSupported();
+    Windows::Foundation::IAsyncOperation<Controller::MatterCameraCapabilities> ReadCapabilitiesAsync(
+        uint64_t nodeId, uint16_t endpointId);
+    Windows::Foundation::IAsyncOperation<Windows::Foundation::Collections::IVectorView<Controller::MatterCameraVideoStream>>
+    ReadAllocatedVideoStreamsAsync(uint64_t nodeId, uint16_t endpointId);
+    Windows::Foundation::IAsyncOperation<Controller::MatterCameraSession> StartWithAllocatedVideoStreamAsync(
+        uint64_t nodeId, uint16_t endpointId, uint16_t videoStreamId, hstring offerSdp);
+    Windows::Foundation::IAsyncOperation<Controller::MatterCameraStartResult> TryStartWithAllocatedVideoStreamAsync(
+        uint64_t nodeId, uint16_t endpointId, uint16_t videoStreamId, hstring offerSdp);
+    Windows::Foundation::IAsyncOperation<Controller::MatterCameraStartResult> TryStartWithIceServersAsync(
+        uint64_t nodeId, uint16_t endpointId, uint16_t videoStreamId, hstring offerSdp,
+        Windows::Foundation::Collections::IVectorView<Controller::MatterCameraIceServer> iceServers);
+private:
+    std::shared_ptr<ControllerRuntime> mRuntime;
+};
+
+struct MatterCameraFailure : MatterCameraFailureT<MatterCameraFailure>
+{
+    MatterCameraFailure(Controller::MatterCameraStage stage, int32_t result, bool hasNativeError,
+                       uint32_t nativeError, hstring message);
+    Controller::MatterCameraStage Stage() const { return mStage; }
+    Controller::MatterCameraFailureCategory Category() const { return mCategory; }
+    int32_t HResult() const { return mHResult; }
+    bool HasNativeError() const { return mHasNativeError; }
+    uint32_t NativeError() const { return mNativeError; }
+    bool Retryable() const;
+    hstring Message() const { return mMessage; }
+private:
+    Controller::MatterCameraStage mStage;
+    Controller::MatterCameraFailureCategory mCategory;
+    int32_t mHResult;
+    bool mHasNativeError;
+    uint32_t mNativeError;
+    hstring mMessage;
+};
+
+struct MatterCameraStartResult : MatterCameraStartResultT<MatterCameraStartResult>
+{
+    explicit MatterCameraStartResult(Controller::MatterCameraSession session) : mSession(std::move(session)) {}
+    explicit MatterCameraStartResult(Controller::MatterCameraFailure failure) : mFailure(std::move(failure)) {}
+    bool Succeeded() const { return mSession != nullptr; }
+    Controller::MatterCameraSession Session() const { return mSession; }
+    Controller::MatterCameraFailure Failure() const { return mFailure; }
+private:
+    Controller::MatterCameraSession mSession{ nullptr };
+    Controller::MatterCameraFailure mFailure{ nullptr };
+};
+
+struct MatterCameraOperationResult : MatterCameraOperationResultT<MatterCameraOperationResult>
+{
+    MatterCameraOperationResult() = default;
+    explicit MatterCameraOperationResult(Controller::MatterCameraFailure failure) : mFailure(std::move(failure)) {}
+    bool Succeeded() const { return mFailure == nullptr; }
+    Controller::MatterCameraFailure Failure() const { return mFailure; }
+private:
+    Controller::MatterCameraFailure mFailure{ nullptr };
+};
+
+struct MatterCameraVideoStream : MatterCameraVideoStreamT<MatterCameraVideoStream>
+{
+    explicit MatterCameraVideoStream(Windows::Foundation::Collections::IPropertySet const & fields);
+    uint16_t StreamId() const { return mStreamId; }
+    uint8_t StreamUsage() const { return mStreamUsage; }
+    bool IsLiveView() const;
+    uint8_t VideoCodec() const { return mVideoCodec; }
+    uint16_t MinimumFrameRate() const { return mMinimumFrameRate; }
+    uint16_t MaximumFrameRate() const { return mMaximumFrameRate; }
+    uint16_t MinimumWidth() const { return mMinimumWidth; }
+    uint16_t MinimumHeight() const { return mMinimumHeight; }
+    uint16_t MaximumWidth() const { return mMaximumWidth; }
+    uint16_t MaximumHeight() const { return mMaximumHeight; }
+    uint32_t MinimumBitRate() const { return mMinimumBitRate; }
+    uint32_t MaximumBitRate() const { return mMaximumBitRate; }
+    uint16_t KeyFrameInterval() const { return mKeyFrameInterval; }
+    uint8_t ReferenceCount() const { return mReferenceCount; }
+    Windows::Foundation::IReference<bool> WatermarkEnabled() const { return mWatermark; }
+    Windows::Foundation::IReference<bool> OnScreenDisplayEnabled() const { return mOnScreenDisplay; }
+private:
+    uint16_t mStreamId;
+    uint8_t mStreamUsage;
+    uint8_t mVideoCodec;
+    uint16_t mMinimumFrameRate;
+    uint16_t mMaximumFrameRate;
+    uint16_t mMinimumWidth;
+    uint16_t mMinimumHeight;
+    uint16_t mMaximumWidth;
+    uint16_t mMaximumHeight;
+    uint32_t mMinimumBitRate;
+    uint32_t mMaximumBitRate;
+    uint16_t mKeyFrameInterval;
+    uint8_t mReferenceCount;
+    Windows::Foundation::IReference<bool> mWatermark{ nullptr };
+    Windows::Foundation::IReference<bool> mOnScreenDisplay{ nullptr };
+};
+
+struct MatterCameraClusterCapabilities : MatterCameraClusterCapabilitiesT<MatterCameraClusterCapabilities>
+{
+    MatterCameraClusterCapabilities(uint32_t cluster, uint16_t revision, uint32_t features, std::vector<uint32_t> attributes,
+        std::vector<uint32_t> accepted, std::vector<uint32_t> generated);
+    uint32_t ClusterId() const { return mCluster; }
+    uint16_t Revision() const { return mRevision; }
+    uint32_t FeatureMap() const { return mFeatures; }
+    Windows::Foundation::Collections::IVectorView<uint32_t> Attributes() const { return mAttributes; }
+    Windows::Foundation::Collections::IVectorView<uint32_t> AcceptedCommands() const { return mAccepted; }
+    Windows::Foundation::Collections::IVectorView<uint32_t> GeneratedCommands() const { return mGenerated; }
+private:
+    uint32_t mCluster;
+    uint16_t mRevision;
+    uint32_t mFeatures;
+    Windows::Foundation::Collections::IVectorView<uint32_t> mAttributes;
+    Windows::Foundation::Collections::IVectorView<uint32_t> mAccepted;
+    Windows::Foundation::Collections::IVectorView<uint32_t> mGenerated;
+};
+
+struct MatterCameraCapabilities : MatterCameraCapabilitiesT<MatterCameraCapabilities>
+{
+    MatterCameraCapabilities(Controller::MatterEndpointDescriptor descriptor,
+        Controller::MatterCameraClusterCapabilities stream, Controller::MatterCameraClusterCapabilities transport) :
+        mDescriptor(std::move(descriptor)), mStream(std::move(stream)), mTransport(std::move(transport)) {}
+    Controller::MatterEndpointDescriptor Descriptor() const { return mDescriptor; }
+    Controller::MatterCameraClusterCapabilities StreamManagement() const { return mStream; }
+    Controller::MatterCameraClusterCapabilities TransportProvider() const { return mTransport; }
+    bool SupportsVideo() const;
+    bool SupportsClientOffer() const;
+private:
+    Controller::MatterEndpointDescriptor mDescriptor;
+    Controller::MatterCameraClusterCapabilities mStream;
+    Controller::MatterCameraClusterCapabilities mTransport;
+};
+
+struct MatterDeviceType : MatterDeviceTypeT<MatterDeviceType>
+{
+    MatterDeviceType(uint32_t deviceTypeId, uint16_t revision) : mDeviceTypeId(deviceTypeId), mRevision(revision) {}
+    uint32_t DeviceTypeId() const { return mDeviceTypeId; }
+    uint16_t Revision() const { return mRevision; }
+
+private:
+    uint32_t mDeviceTypeId;
+    uint16_t mRevision;
+};
+
+struct MatterEndpointDescriptor : MatterEndpointDescriptorT<MatterEndpointDescriptor>
+{
+    MatterEndpointDescriptor(uint16_t endpointId, std::vector<uint16_t> parts, std::vector<uint32_t> servers,
+                             std::vector<uint32_t> clients, std::vector<Controller::MatterDeviceType> types);
+    uint16_t EndpointId() const { return mEndpointId; }
+    Windows::Foundation::Collections::IVectorView<uint16_t> PartsList() const { return mParts; }
+    Windows::Foundation::Collections::IVectorView<uint32_t> ServerClusters() const { return mServers; }
+    Windows::Foundation::Collections::IVectorView<uint32_t> ClientClusters() const { return mClients; }
+    Windows::Foundation::Collections::IVectorView<Controller::MatterDeviceType> DeviceTypes() const { return mTypes; }
+    bool HasCameraClusters() const;
+
+private:
+    uint16_t mEndpointId;
+    Windows::Foundation::Collections::IVectorView<uint16_t> mParts;
+    Windows::Foundation::Collections::IVectorView<uint32_t> mServers;
+    Windows::Foundation::Collections::IVectorView<uint32_t> mClients;
+    Windows::Foundation::Collections::IVectorView<Controller::MatterDeviceType> mTypes;
+};
+
+struct MatterControllerCameraDiscovery : MatterControllerCameraDiscoveryT<MatterControllerCameraDiscovery>
+{
+    explicit MatterControllerCameraDiscovery(Controller::MatterController controller);
+    Windows::Foundation::IAsyncOperation<Controller::MatterEndpointDescriptor> ReadDescriptorAsync(uint64_t nodeId,
+                                                                                                 uint16_t endpointId);
+    Windows::Foundation::IAsyncOperation<Windows::Foundation::Collections::IVectorView<Controller::MatterEndpointDescriptor>>
+    DiscoverCamerasAsync(uint64_t nodeId);
+    Windows::Foundation::IAsyncOperation<Controller::MatterCameraDiscoveryResult> TryDiscoverCamerasAsync(uint64_t nodeId);
+
+private:
+    std::shared_ptr<ControllerRuntime> mRuntime;
+};
+
+struct MatterCameraDiscoveryResult : MatterCameraDiscoveryResultT<MatterCameraDiscoveryResult>
+{
+    explicit MatterCameraDiscoveryResult(
+        Windows::Foundation::Collections::IVectorView<Controller::MatterEndpointDescriptor> cameras) : mCameras(std::move(cameras)) {}
+    explicit MatterCameraDiscoveryResult(Controller::MatterCameraFailure failure) : mFailure(std::move(failure)) {}
+    bool Succeeded() const { return mCameras != nullptr; }
+    Windows::Foundation::Collections::IVectorView<Controller::MatterEndpointDescriptor> Cameras() const { return mCameras; }
+    Controller::MatterCameraFailure Failure() const { return mFailure; }
+private:
+    Windows::Foundation::Collections::IVectorView<Controller::MatterEndpointDescriptor> mCameras{ nullptr };
+    Controller::MatterCameraFailure mFailure{ nullptr };
+};
+
 struct MatterControllerRecovery : MatterControllerRecoveryT<MatterControllerRecovery>
 {
     explicit MatterControllerRecovery(Controller::MatterController controller);
@@ -472,6 +761,12 @@ struct MatterController : MatterControllerT<MatterController, implementation::Ma
 {};
 struct MatterControllerRecovery : MatterControllerRecoveryT<MatterControllerRecovery, implementation::MatterControllerRecovery>
 {};
+struct MatterControllerCameraDiscovery :
+    MatterControllerCameraDiscoveryT<MatterControllerCameraDiscovery, implementation::MatterControllerCameraDiscovery>
+{};
+struct MatterControllerCamera : MatterControllerCameraT<MatterControllerCamera, implementation::MatterControllerCamera> {};
+struct MatterCameraIceCandidate : MatterCameraIceCandidateT<MatterCameraIceCandidate, implementation::MatterCameraIceCandidate> {};
+struct MatterCameraIceServer : MatterCameraIceServerT<MatterCameraIceServer, implementation::MatterCameraIceServer> {};
 struct MatterControllerNetworkCommissioning :
     MatterControllerNetworkCommissioningT<MatterControllerNetworkCommissioning,
                                           implementation::MatterControllerNetworkCommissioning>

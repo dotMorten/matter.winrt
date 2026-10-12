@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; media-src blob:; connect-src 'none'; base-uri 'none'; form-action 'none'">
+  <title>Matter camera receiver</title>
+  <link rel="stylesheet" href="receiver.css">
+</head>
+<body>
+  <video id="video" autoplay muted playsinline></video>
+  <p id="state">Receiver ready; signaling and playback are separate states.</p>
+  <script src="receiver.js"></script>
+</body>
+</html>

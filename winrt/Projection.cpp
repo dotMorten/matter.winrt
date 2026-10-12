@@ -2,6 +2,7 @@
 
 #include <app-common/zap-generated/cluster-objects.h>
 #include <app/CommandSender.h>
+#include <app/BufferedReadCallback.h>
 #include <app/InteractionModelEngine.h>
 #include <app/ReadClient.h>
 #include <app/WriteClient.h>
@@ -12,6 +13,10 @@
 #include <controller/CHIPDeviceControllerFactory.h>
 #include <controller/ExampleOperationalCredentialsIssuer.h>
 #include <controller/InvokeInteraction.h>
+#include <controller/CHIPControllerBuildConfig.h>
+#if CHIP_CONTROLLER_BUILD_WEBRTC_SIGNALING
+#include "CameraControllerRuntime.h"
+#endif
 #include <credentials/GroupDataProviderImpl.h>
 #include <credentials/PersistentStorageOpCertStore.h>
 #include <credentials/attestation_verifier/DefaultDeviceAttestationVerifier.h>
@@ -79,12 +84,23 @@ std::chrono::milliseconds InteractionWaitTimeout(std::optional<uint16_t> timedIn
     return timeout;
 }
 
+class ChipOperationError : public hresult_error
+{
+public:
+    ChipOperationError(CHIP_ERROR error, hstring message) :
+        hresult_error(HRESULT_FROM_WIN32(ERROR_GEN_FAILURE), message), mNativeError(error)
+    {}
+    CHIP_ERROR NativeError() const { return mNativeError; }
+private:
+    CHIP_ERROR mNativeError;
+};
+
 [[noreturn]] void ThrowChipError(CHIP_ERROR error, wchar_t const * operation)
 {
     std::wstring message(operation);
     message.append(L": ");
     message.append(to_hstring(error.AsString()).c_str());
-    throw hresult_error(HRESULT_FROM_WIN32(ERROR_GEN_FAILURE), message);
+    throw ChipOperationError(error, hstring(message));
 }
 
 void CheckChipError(CHIP_ERROR error, wchar_t const * operation)
@@ -734,7 +750,8 @@ public:
                      uint16_t minimumInterval, uint16_t maximumInterval, ReportCallback reportCallback = {}) :
         mPath(endpoint, cluster, attribute), mSubscription(subscription), mMinimumInterval(minimumInterval),
         mMaximumInterval(maximumInterval), mReportCallback(std::move(reportCallback)),
-        onConnected(&HandleConnected, this), onConnectionFailure(&HandleConnectionFailure, this)
+        onConnected(&HandleConnected, this), onConnectionFailure(&HandleConnectionFailure, this),
+        mBufferedCallback(*this, true)
     {}
 
     void OnAttributeData(app::ConcreteDataAttributePath const & path, TLV::TLVReader * data,
@@ -820,7 +837,7 @@ public:
     {
         auto * state = static_cast<GenericReadState *>(context);
         state->client = Platform::MakeUnique<app::ReadClient>(
-            app::InteractionModelEngine::GetInstance(), &exchangeManager, *state,
+            app::InteractionModelEngine::GetInstance(), &exchangeManager, state->mBufferedCallback,
             state->mSubscription ? app::ReadClient::InteractionType::Subscribe : app::ReadClient::InteractionType::Read);
         if (!state->client)
         {
@@ -862,6 +879,7 @@ private:
     uint16_t mMinimumInterval;
     uint16_t mMaximumInterval;
     ReportCallback mReportCallback;
+    app::BufferedReadCallback mBufferedCallback;
     Platform::UniquePtr<app::ReadClient> client;
 };
 
@@ -1264,9 +1282,13 @@ public:
         }
 
         std::scoped_lock lock(sMutex);
-        if (!sInstance.expired())
+        if (auto previous = sInstance.lock())
         {
-            throw hresult_illegal_method_call(L"Only one MatterController may be active in a process.");
+            std::scoped_lock previousOperationLock(previous->mOperationMutex);
+            if (!previous->mClosed)
+            {
+                throw hresult_illegal_method_call(L"Only one MatterController may be active in a process.");
+            }
         }
 
         auto runtime = std::shared_ptr<ControllerRuntime>(new ControllerRuntime(options));
@@ -1294,8 +1316,21 @@ public:
             subscription->Close();
         }
         mEventSubscriptions.clear();
+#if CHIP_CONTROLLER_BUILD_WEBRTC_SIGNALING
+        if (mCameraHost && mCameraHost->ActiveHandle() != 0 && mCommissionerInitialized)
+        {
+            LogErrorOnFailure(mCameraHost->Send(mCommissioner, mCameraHost->ActiveHandle(),
+                                               CameraControllerRuntime::Client::Command::End, {}, {}, {}));
+        }
+#endif
         (void) PlatformMgr().StopEventLoopTask();
         PlatformMgr().LockChipStack();
+#if CHIP_CONTROLLER_BUILD_WEBRTC_SIGNALING
+        if (mCameraHost)
+        {
+            LogErrorOnFailure(mCameraHost->Shutdown());
+        }
+#endif
         if (mCommissionerInitialized)
         {
             mCommissioner.Shutdown();
@@ -1306,6 +1341,9 @@ public:
             DeviceControllerFactory::GetInstance().Shutdown();
             mFactoryInitialized = false;
         }
+#if CHIP_CONTROLLER_BUILD_WEBRTC_SIGNALING
+        mCameraHost.reset();
+#endif
         Credentials::SetGroupDataProvider(nullptr);
         mGroupDataProvider.Finish();
         mOpCertStore.Finish();
@@ -1486,18 +1524,38 @@ public:
     }
 
     Windows::Foundation::Collections::IPropertySet ReadAttribute(uint64_t nodeId, EndpointId endpointId, ClusterId clusterId,
-                                                                  AttributeId attributeId)
+                                                                  AttributeId attributeId,
+                                                                  std::shared_ptr<std::atomic_bool> cancellation = {},
+                                                                  std::chrono::steady_clock::time_point deadline =
+                                                                      std::chrono::steady_clock::time_point::max())
     {
         std::scoped_lock operationLock(mOperationMutex);
         EnsureOpen();
         auto state = std::make_shared<GenericReadState>(endpointId, clusterId, attributeId, false, 0, 0);
+        if (cancellation && cancellation->load(std::memory_order_acquire))
+        {
+            throw hresult_canceled();
+        }
         StartConnectedOperation(nodeId, state->onConnected, state->onConnectionFailure);
         std::unique_lock lock(state->mutex);
-        if (!state->condition.wait_for(lock, kInteractionTimeout, [&state]() { return state->complete; }))
+        deadline = std::min(deadline, std::chrono::steady_clock::now() + kInteractionTimeout);
+        while (!state->complete)
         {
-            lock.unlock();
-            state->Close();
-            throw hresult_error(HRESULT_FROM_WIN32(ERROR_TIMEOUT), L"Matter attribute read timed out.");
+            if (cancellation && cancellation->load(std::memory_order_acquire))
+            {
+                lock.unlock();
+                state->Close();
+                throw hresult_canceled();
+            }
+            if (std::chrono::steady_clock::now() >= deadline)
+            {
+                lock.unlock();
+                state->Close();
+                throw hresult_error(HRESULT_FROM_WIN32(ERROR_TIMEOUT), L"Matter attribute read timed out.");
+            }
+            const auto wake = cancellation ? std::min(deadline, std::chrono::steady_clock::now() + std::chrono::milliseconds(100))
+                                           : deadline;
+            state->condition.wait_until(lock, wake, [&state]() { return state->complete; });
         }
         CHIP_ERROR result = state->result;
         auto value        = state->value;
@@ -1509,6 +1567,217 @@ public:
             throw hresult_error(E_FAIL, L"The Matter attribute read returned no value.");
         }
         return value;
+    }
+
+    Controller::MatterCameraSession StartCamera(uint64_t nodeId, uint16_t endpoint, uint16_t stream, std::string sdp,
+        std::shared_ptr<std::atomic_bool> const & canceled,
+        std::vector<Controller::MatterCameraIceServer> const & iceServers)
+    {
+#if CHIP_CONTROLLER_BUILD_WEBRTC_SIGNALING
+        std::scoped_lock operationLock(mOperationMutex);
+        EnsureOpen();
+        if (!mCameraHost)
+        {
+            throw hresult_illegal_method_call(L"EnableCameraSignaling must be set before creating the controller.");
+        }
+        if (canceled && canceled->load(std::memory_order_acquire))
+        {
+            throw hresult_canceled();
+        }
+        std::vector<CameraControllerRuntime::IceServerConfiguration> servers;
+        for (auto const & source : iceServers)
+        {
+            CameraControllerRuntime::IceServerConfiguration server;
+            for (auto const & url : source.Urls())
+            {
+                server.urls.push_back(to_string(url));
+            }
+            if (source.HasUsername())
+            {
+                server.username = to_string(source.Username());
+            }
+            if (source.HasCredential())
+            {
+                server.credential = to_string(source.Credential());
+            }
+            if (source.CertificateAuthorityId())
+            {
+                server.certificateAuthorityId = source.CertificateAuthorityId().Value();
+            }
+            servers.push_back(std::move(server));
+        }
+        uint64_t handle = 0;
+        uint16_t requestor = kInvalidEndpointId;
+        {
+            CameraStackLock lock;
+            auto * systemState = DeviceControllerFactory::GetInstance().GetSystemState();
+            if (!systemState || !systemState->Fabrics() || !systemState->CASESessionMgr() || !systemState->SystemLayer())
+            {
+                throw hresult_illegal_method_call(L"The native controller system state is unavailable.");
+            }
+            CheckChipError(mCameraHost->Create(*systemState->Fabrics(), *systemState->CASESessionMgr(), *systemState->SystemLayer(),
+                ScopedNodeId(nodeId, mCommissioner.GetFabricIndex()), endpoint, stream, handle), L"Create camera session");
+            requestor = mCameraHost->RequestorEndpoint();
+        }
+        CHIP_ERROR error = mCameraHost->Send(mCommissioner, handle, CameraControllerRuntime::Client::Command::Offer,
+                                             std::move(sdp), {}, canceled, std::move(servers));
+        if (error == CHIP_NO_ERROR && canceled && canceled->load(std::memory_order_acquire))
+        {
+            error = CHIP_ERROR_CANCELLED;
+        }
+        if (error != CHIP_NO_ERROR)
+        {
+            LogErrorOnFailure(mCameraHost->Send(mCommissioner, handle, CameraControllerRuntime::Client::Command::End,
+                                               {}, {}, {}));
+            CameraStackLock lock;
+            LogErrorOnFailure(mCameraHost->CloseLocal(handle));
+            if (error == CHIP_ERROR_CANCELLED)
+            {
+                throw hresult_canceled();
+            }
+            ThrowChipError(error, L"Send camera offer");
+        }
+        return winrt::make<implementation::MatterCameraSession>(shared_from_this(), handle, nodeId, endpoint, requestor);
+#else
+        throw hresult_not_implemented(L"Camera signaling is not compiled into this component.");
+#endif
+    }
+
+    void EnsureCameraSignalingEnabled()
+    {
+        std::scoped_lock operationLock(mOperationMutex);
+        EnsureOpen();
+#if CHIP_CONTROLLER_BUILD_WEBRTC_SIGNALING
+        if (!mCameraHost)
+        {
+            throw hresult_illegal_method_call(L"EnableCameraSignaling must be set before creating the controller.");
+        }
+#else
+        ThrowChipError(CHIP_ERROR_UNSUPPORTED_CHIP_FEATURE, L"Camera signaling is not compiled into this component");
+#endif
+    }
+
+    void SendCameraCandidates(uint64_t handle, std::vector<Controller::MatterCameraIceCandidate> const & candidates,
+                              std::shared_ptr<std::atomic_bool> const & canceled)
+    {
+#if CHIP_CONTROLLER_BUILD_WEBRTC_SIGNALING
+        std::scoped_lock operationLock(mOperationMutex);
+        EnsureOpen();
+        if (!mCameraHost)
+        {
+            throw hresult_illegal_method_call(L"Camera signaling is disabled.");
+        }
+        std::vector<CameraControllerRuntime::Cluster::Candidate> values;
+        for (auto const & candidate : candidates)
+        {
+            CameraControllerRuntime::Cluster::Candidate value;
+            value.candidate = to_string(candidate.Candidate());
+            if (!candidate.Mid().empty())
+            {
+                value.mid = to_string(candidate.Mid());
+            }
+            if (candidate.LineIndex() >= 0)
+            {
+                value.lineIndex = static_cast<uint16_t>(candidate.LineIndex());
+            }
+            values.push_back(std::move(value));
+        }
+        const auto error = mCameraHost->Send(mCommissioner, handle, CameraControllerRuntime::Client::Command::Candidates,
+                                             {}, std::move(values), canceled);
+        if (error == CHIP_ERROR_CANCELLED)
+        {
+            throw hresult_canceled();
+        }
+        CheckChipError(error, L"Send camera ICE candidates");
+#else
+        throw hresult_not_implemented(L"Camera signaling is not compiled into this component.");
+#endif
+    }
+
+    Controller::MatterCameraSignal PollCameraSignal(uint64_t handle)
+    {
+#if CHIP_CONTROLLER_BUILD_WEBRTC_SIGNALING
+        std::unique_lock operationLock(mOperationMutex, std::try_to_lock);
+        if (!operationLock.owns_lock())
+        {
+            return nullptr;
+        }
+        EnsureOpen();
+        if (!mCameraHost)
+        {
+            throw hresult_illegal_method_call(L"Camera signaling is disabled.");
+        }
+        CameraStackLock lock;
+        CheckChipError(mCameraHost->Validate(handle), L"Validate camera session");
+        auto signal = mCameraHost->TakeSignal(handle);
+        if (!signal)
+        {
+            return nullptr;
+        }
+        std::vector<Controller::MatterCameraIceCandidate> candidates;
+        for (auto const & candidate : signal->candidates)
+        {
+            candidates.push_back(winrt::make<implementation::MatterCameraIceCandidate>(
+                to_hstring(candidate.candidate), candidate.mid ? to_hstring(*candidate.mid) : hstring{},
+                candidate.lineIndex ? int32_t(*candidate.lineIndex) : -1));
+        }
+        return winrt::make<implementation::MatterCameraSignal>(handle,
+            static_cast<Controller::MatterCameraSignalKind>(signal->type), to_hstring(signal->sdp),
+            std::move(candidates), signal->error.AsInteger(), signal->protocolId, static_cast<uint8_t>(signal->reason));
+#else
+        throw hresult_not_implemented(L"Camera signaling is not compiled into this component.");
+#endif
+    }
+
+    Controller::MatterCameraSessionState CameraState(uint64_t handle)
+    {
+#if CHIP_CONTROLLER_BUILD_WEBRTC_SIGNALING
+        std::scoped_lock operationLock(mOperationMutex);
+        using State = Controller::MatterCameraSessionState;
+        if (mClosed || !mCameraHost || mCameraHost->ActiveHandle() != handle)
+        {
+            return State::Closed;
+        }
+        CameraStackLock lock;
+        CameraControllerRuntime::Cluster::SessionState state;
+        CheckChipError(mCameraHost->GetSessionState(handle, state), L"Read camera signaling state");
+        switch (state)
+        {
+        case CameraControllerRuntime::Cluster::SessionState::Negotiating: return State::Negotiating;
+        case CameraControllerRuntime::Cluster::SessionState::Established: return State::Established;
+        case CameraControllerRuntime::Cluster::SessionState::Closed: return State::Closed;
+        case CameraControllerRuntime::Cluster::SessionState::Failed: return State::Failed;
+        }
+        throw hresult_illegal_method_call(L"Unknown native camera state.");
+#else
+        throw hresult_not_implemented(L"Camera signaling is not compiled into this component.");
+#endif
+    }
+
+    void CloseCamera(uint64_t handle)
+    {
+#if CHIP_CONTROLLER_BUILD_WEBRTC_SIGNALING
+        std::scoped_lock operationLock(mOperationMutex);
+        if (mClosed || !mCameraHost)
+        {
+            return;
+        }
+        {
+            CameraStackLock lock;
+            if (mCameraHost->Validate(handle) != CHIP_NO_ERROR)
+            {
+                return;
+            }
+        }
+        const auto error = mCameraHost->Send(mCommissioner, handle, CameraControllerRuntime::Client::Command::End, {}, {}, {});
+        {
+            CameraStackLock lock;
+            CheckChipError(mCameraHost->CloseLocal(handle), L"Close local camera session");
+        }
+        CheckChipError(error, L"End remote camera session");
+#else
+        throw hresult_not_implemented(L"Camera signaling is not compiled into this component.");
+#endif
     }
 
     void WriteAttribute(uint64_t nodeId, EndpointId endpointId, ClusterId clusterId, AttributeId attributeId,
@@ -1732,6 +2001,7 @@ private:
     explicit ControllerRuntime(Controller::ControllerOptions const & options) :
         mStoragePath(options.StoragePath()), mControllerNodeId(options.ControllerNodeId()),
         mBluetoothAdapterId(options.BluetoothAdapterId()), mAllowTestAttestation(options.AllowTestAttestation()),
+        mEnableCameraSignaling(options.EnableCameraSignaling()),
         mGroupDataProvider(50, 25), mPairingDelegate(mPairingState, mAllowTestAttestation)
     {}
 
@@ -1775,6 +2045,15 @@ private:
     CHIP_ERROR InitializeController()
     {
         ReturnErrorOnFailure(mStorage.Init(&PersistedStorage::KeyValueStoreMgr()));
+#if CHIP_CONTROLLER_BUILD_WEBRTC_SIGNALING
+        if (mEnableCameraSignaling)
+        {
+            mCameraHost = std::make_unique<CameraControllerRuntime>(mStorage);
+            ReturnErrorOnFailure(mCameraHost->Init(mStorage));
+        }
+#else
+        VerifyOrReturnError(!mEnableCameraSignaling, CHIP_ERROR_UNSUPPORTED_CHIP_FEATURE);
+#endif
         LoadCommissionedNodes();
         ReturnErrorOnFailure(mOperationalKeystore.Init(&mStorage));
         ReturnErrorOnFailure(mOpCertStore.Init(&mStorage));
@@ -1791,6 +2070,16 @@ private:
         factoryParameters.sessionKeystore          = &mSessionKeystore;
         factoryParameters.groupDataProvider        = &mGroupDataProvider;
         factoryParameters.dataModelProvider        = &mDataModelProvider;
+#if CHIP_CONTROLLER_BUILD_WEBRTC_SIGNALING
+        if (mCameraHost)
+        {
+            factoryParameters.dataModelProvider = &mCameraHost->Provider();
+            factoryParameters.enableServerInteractions = true;
+            factoryParameters.enableTCPServer = true;
+            // Port zero binds UDP and TCP independently; the advertised port must reach both.
+            factoryParameters.listenPort = CHIP_PORT;
+        }
+#endif
         ReturnErrorOnFailure(DeviceControllerFactory::GetInstance().Init(factoryParameters));
         mFactoryInitialized = true;
 
@@ -1912,6 +2201,7 @@ private:
     uint64_t mControllerNodeId;
     uint32_t mBluetoothAdapterId;
     bool mAllowTestAttestation;
+    bool mEnableCameraSignaling;
     bool mClosed = false;
     KvsPersistentStorageDelegate mStorage;
     PersistentStorageOperationalKeystore mOperationalKeystore;
@@ -1920,6 +2210,9 @@ private:
     Credentials::GroupDataProviderImpl mGroupDataProvider;
     ExampleOperationalCredentialsIssuer mCredentialsIssuer;
     Testing::EmptyProvider mDataModelProvider;
+#if CHIP_CONTROLLER_BUILD_WEBRTC_SIGNALING
+    std::unique_ptr<CameraControllerRuntime> mCameraHost;
+#endif
     DeviceCommissioner mCommissioner;
     PairingState mPairingState;
     PairingDelegate mPairingDelegate;
@@ -2924,6 +3217,871 @@ MatterControllerRecovery::RecoverNodeAsync(uint64_t nodeId)
 {
     co_await resume_background();
     co_return mRuntime->RecoverNode(nodeId);
+}
+
+namespace {
+
+constexpr size_t kMaximumDescriptorListItems = 512;
+constexpr size_t kMaximumDiscoveredEndpoints = 128;
+
+Windows::Foundation::Collections::IVector<Windows::Foundation::IInspectable>
+DescriptorList(Windows::Foundation::Collections::IPropertySet const & data)
+{
+    if (!data || !data.HasKey(L"value") || !data.Lookup(L"value"))
+    {
+        throw hresult_error(E_BOUNDS, L"The Descriptor list is null or missing.");
+    }
+    auto list = data.Lookup(L"value").as<Windows::Foundation::Collections::IVector<Windows::Foundation::IInspectable>>();
+    if (list.Size() > kMaximumDescriptorListItems)
+    {
+        throw hresult_error(E_BOUNDS, L"The Descriptor list exceeds the supported resource limit.");
+    }
+    return list;
+}
+
+template <typename Value>
+Value DescriptorUnsigned(Windows::Foundation::IInspectable const & value)
+{
+    if (!value)
+    {
+        throw hresult_error(E_BOUNDS, L"A Descriptor numeric field is null.");
+    }
+    const uint64_t number = unbox_value<uint64_t>(value);
+    if (number > std::numeric_limits<Value>::max())
+    {
+        throw hresult_error(E_BOUNDS, L"A Descriptor numeric field is outside its projected range.");
+    }
+    return static_cast<Value>(number);
+}
+
+template <typename Value>
+std::vector<Value> DescriptorNumericList(Windows::Foundation::Collections::IPropertySet const & data)
+{
+    auto list = DescriptorList(data);
+    std::vector<Value> result;
+    result.reserve(list.Size());
+    for (auto const & value : list)
+    {
+        result.push_back(DescriptorUnsigned<Value>(value));
+    }
+    return result;
+}
+
+Controller::MatterEndpointDescriptor ReadEndpointDescriptor(
+    std::shared_ptr<ControllerRuntime> const & runtime, uint64_t nodeId, uint16_t endpointId,
+    std::shared_ptr<std::atomic_bool> const & cancellation, std::chrono::steady_clock::time_point deadline)
+{
+    using namespace chip::app::Clusters::Descriptor;
+    auto parts = DescriptorNumericList<uint16_t>(
+        runtime->ReadAttribute(nodeId, endpointId, Id, Attributes::PartsList::Id, cancellation, deadline));
+    auto servers = DescriptorNumericList<uint32_t>(
+        runtime->ReadAttribute(nodeId, endpointId, Id, Attributes::ServerList::Id, cancellation, deadline));
+    auto clients = DescriptorNumericList<uint32_t>(
+        runtime->ReadAttribute(nodeId, endpointId, Id, Attributes::ClientList::Id, cancellation, deadline));
+    auto list = DescriptorList(
+        runtime->ReadAttribute(nodeId, endpointId, Id, Attributes::DeviceTypeList::Id, cancellation, deadline));
+    std::vector<Controller::MatterDeviceType> types;
+    types.reserve(list.Size());
+    for (auto const & value : list)
+    {
+        auto fields = value.as<Windows::Foundation::Collections::IPropertySet>();
+        if (!fields.HasKey(L"0") || !fields.HasKey(L"1"))
+        {
+            throw hresult_error(E_BOUNDS, L"A Descriptor device-type entry is missing required fields.");
+        }
+        const auto deviceType = DescriptorUnsigned<uint32_t>(fields.Lookup(L"0"));
+        const auto revision = DescriptorUnsigned<uint16_t>(fields.Lookup(L"1"));
+        if (revision == 0)
+        {
+            throw hresult_error(E_BOUNDS, L"A Descriptor device-type revision cannot be zero.");
+        }
+        types.push_back(winrt::make<implementation::MatterDeviceType>(deviceType, revision));
+    }
+    return winrt::make<implementation::MatterEndpointDescriptor>(endpointId, std::move(parts), std::move(servers),
+                                                                 std::move(clients), std::move(types));
+}
+
+template <typename Value>
+Value CameraStreamField(Windows::Foundation::Collections::IPropertySet const & fields, wchar_t const * key)
+{
+    if (!fields || !fields.HasKey(key))
+    {
+        throw hresult_error(E_BOUNDS, L"An allocated video stream is missing a required field.");
+    }
+    return DescriptorUnsigned<Value>(fields.Lookup(key));
+}
+
+Controller::MatterCameraClusterCapabilities ReadCameraClusterCapabilities(
+    std::shared_ptr<ControllerRuntime> const & runtime, uint64_t nodeId, uint16_t endpointId, uint32_t cluster,
+    std::shared_ptr<std::atomic_bool> const & canceled, std::chrono::steady_clock::time_point deadline)
+{
+    using namespace chip::app::Clusters::Globals;
+    auto revision = runtime->ReadAttribute(nodeId, endpointId, cluster, Attributes::ClusterRevision::Id, canceled, deadline);
+    auto features = runtime->ReadAttribute(nodeId, endpointId, cluster, Attributes::FeatureMap::Id, canceled, deadline);
+    auto attributes = DescriptorNumericList<uint32_t>(
+        runtime->ReadAttribute(nodeId, endpointId, cluster, Attributes::AttributeList::Id, canceled, deadline));
+    auto accepted = DescriptorNumericList<uint32_t>(
+        runtime->ReadAttribute(nodeId, endpointId, cluster, Attributes::AcceptedCommandList::Id, canceled, deadline));
+    auto generated = DescriptorNumericList<uint32_t>(
+        runtime->ReadAttribute(nodeId, endpointId, cluster, Attributes::GeneratedCommandList::Id, canceled, deadline));
+    return winrt::make<implementation::MatterCameraClusterCapabilities>(cluster,
+        DescriptorUnsigned<uint16_t>(revision.Lookup(L"value")), DescriptorUnsigned<uint32_t>(features.Lookup(L"value")),
+        std::move(attributes), std::move(accepted), std::move(generated));
+}
+
+Controller::MatterCameraCapabilities ReadCameraCapabilities(
+    std::shared_ptr<ControllerRuntime> const & runtime, uint64_t nodeId, Controller::MatterEndpointDescriptor const & descriptor,
+    std::shared_ptr<std::atomic_bool> const & canceled, std::chrono::steady_clock::time_point deadline)
+{
+    if (!descriptor.HasCameraClusters())
+    {
+        throw hresult_not_implemented(L"The endpoint does not expose camera streaming and WebRTC provider clusters.");
+    }
+    auto stream = ReadCameraClusterCapabilities(runtime, nodeId, descriptor.EndpointId(),
+        chip::app::Clusters::CameraAvStreamManagement::Id, canceled, deadline);
+    auto transport = ReadCameraClusterCapabilities(runtime, nodeId, descriptor.EndpointId(),
+        chip::app::Clusters::WebRTCTransportProvider::Id, canceled, deadline);
+    return winrt::make<implementation::MatterCameraCapabilities>(descriptor, std::move(stream), std::move(transport));
+}
+
+Windows::Foundation::Collections::IVectorView<Controller::MatterCameraVideoStream> ReadCameraVideoStreams(
+    std::shared_ptr<ControllerRuntime> const & runtime, uint64_t nodeId, uint16_t endpointId,
+    std::shared_ptr<std::atomic_bool> const & canceled, std::chrono::steady_clock::time_point deadline)
+{
+    using namespace chip::app::Clusters::CameraAvStreamManagement;
+    auto list = DescriptorList(runtime->ReadAttribute(nodeId, endpointId, Id, Attributes::AllocatedVideoStreams::Id,
+                                                     canceled, deadline));
+    std::vector<Controller::MatterCameraVideoStream> streams;
+    streams.reserve(list.Size());
+    for (auto const & entry : list)
+    {
+        auto stream = winrt::make<implementation::MatterCameraVideoStream>(
+            entry.as<Windows::Foundation::Collections::IPropertySet>());
+        if (std::any_of(streams.begin(), streams.end(), [&](auto const & existing) {
+                return existing.StreamId() == stream.StreamId();
+            }))
+        {
+            throw hresult_error(E_BOUNDS, L"Allocated video streams contain a duplicate identifier.");
+        }
+        streams.push_back(std::move(stream));
+    }
+    return single_threaded_vector(std::move(streams)).GetView();
+}
+
+} // namespace
+
+MatterCameraVideoStream::MatterCameraVideoStream(Windows::Foundation::Collections::IPropertySet const & fields) :
+    mStreamId(CameraStreamField<uint16_t>(fields, L"0")),
+    mStreamUsage(CameraStreamField<uint8_t>(fields, L"1")),
+    mVideoCodec(CameraStreamField<uint8_t>(fields, L"2")),
+    mMinimumFrameRate(CameraStreamField<uint16_t>(fields, L"3")),
+    mMaximumFrameRate(CameraStreamField<uint16_t>(fields, L"4")),
+    mMinimumBitRate(CameraStreamField<uint32_t>(fields, L"7")),
+    mMaximumBitRate(CameraStreamField<uint32_t>(fields, L"8")),
+    mKeyFrameInterval(CameraStreamField<uint16_t>(fields, L"9")),
+    mReferenceCount(CameraStreamField<uint8_t>(fields, L"12"))
+{
+    if (!fields.HasKey(L"5") || !fields.HasKey(L"6"))
+    {
+        throw hresult_error(E_BOUNDS, L"An allocated video stream is missing its resolution bounds.");
+    }
+    auto minimum = fields.Lookup(L"5").as<Windows::Foundation::Collections::IPropertySet>();
+    auto maximum = fields.Lookup(L"6").as<Windows::Foundation::Collections::IPropertySet>();
+    mMinimumWidth = CameraStreamField<uint16_t>(minimum, L"0");
+    mMinimumHeight = CameraStreamField<uint16_t>(minimum, L"1");
+    mMaximumWidth = CameraStreamField<uint16_t>(maximum, L"0");
+    mMaximumHeight = CameraStreamField<uint16_t>(maximum, L"1");
+    if (mStreamId == UINT16_MAX || mMinimumFrameRate > mMaximumFrameRate ||
+        mMinimumWidth > mMaximumWidth || mMinimumHeight > mMaximumHeight || mMinimumBitRate > mMaximumBitRate)
+    {
+        throw hresult_error(E_BOUNDS, L"An allocated video stream has invalid identifiers or reversed bounds.");
+    }
+    if (fields.HasKey(L"10"))
+    {
+        mWatermark = box_value(unbox_value<bool>(fields.Lookup(L"10"))).as<Windows::Foundation::IReference<bool>>();
+    }
+    if (fields.HasKey(L"11"))
+    {
+        mOnScreenDisplay = box_value(unbox_value<bool>(fields.Lookup(L"11"))).as<Windows::Foundation::IReference<bool>>();
+    }
+}
+
+bool MatterCameraVideoStream::IsLiveView() const
+{
+    return mStreamUsage == static_cast<uint8_t>(chip::app::Clusters::Globals::StreamUsageEnum::kLiveView);
+}
+
+MatterCameraIceCandidate::MatterCameraIceCandidate(hstring candidate, hstring mid, int32_t lineIndex) :
+    mCandidate(std::move(candidate)), mMid(std::move(mid)), mLineIndex(lineIndex)
+{
+    const auto text = to_string(mCandidate);
+    const auto encodedMid = to_string(mMid);
+    if (text.empty() || text.size() > 2048 || text.find('\0') != std::string::npos ||
+        encodedMid.size() > 256 || encodedMid.find('\0') != std::string::npos || lineIndex < -1 || lineIndex >= UINT16_MAX)
+    {
+        throw hresult_invalid_argument(L"ICE candidate fields exceed supported bounds.");
+    }
+}
+
+MatterCameraIceServer::MatterCameraIceServer(Windows::Foundation::Collections::IVectorView<hstring> urls,
+    bool hasUsername, hstring username, bool hasCredential, hstring credential,
+    Windows::Foundation::IReference<uint16_t> certificateAuthorityId) :
+    mHasUsername(hasUsername), mUsername(std::move(username)), mHasCredential(hasCredential),
+    mCredential(std::move(credential)), mCertificateAuthorityId(certificateAuthorityId)
+{
+    if (!urls || urls.Size() == 0 || urls.Size() > 4 ||
+        (!hasUsername && !mUsername.empty()) || (!hasCredential && !mCredential.empty()))
+    {
+        throw hresult_invalid_argument(L"ICE server URL count or optional-field presence is invalid.");
+    }
+    std::vector<hstring> copiedUrls;
+    for (auto const & url : urls)
+    {
+        auto encoded = to_string(url);
+        const auto prefix = encoded.find(':');
+        if (encoded.size() > 512 || prefix == std::string::npos || prefix + 1 == encoded.size() ||
+            (encoded.substr(0, prefix) != "stun" && encoded.substr(0, prefix) != "stuns" &&
+             encoded.substr(0, prefix) != "turn" && encoded.substr(0, prefix) != "turns") ||
+            std::any_of(encoded.begin(), encoded.end(), [](unsigned char c) { return c <= 0x20 || c == 0x7f; }))
+        {
+            throw hresult_invalid_argument(L"ICE server URLs must be bounded STUN or TURN URIs without whitespace or controls.");
+        }
+        copiedUrls.push_back(url);
+    }
+    for (auto const & field : { mUsername, mCredential })
+    {
+        auto encoded = to_string(field);
+        if (encoded.size() > 256 || encoded.find('\0') != std::string::npos)
+        {
+            throw hresult_invalid_argument(L"ICE server credentials exceed supported bounds.");
+        }
+    }
+    mUrls = single_threaded_vector(std::move(copiedUrls)).GetView();
+}
+
+MatterCameraSignal::MatterCameraSignal(uint64_t handle, Controller::MatterCameraSignalKind kind, hstring sdp,
+                                       std::vector<Controller::MatterCameraIceCandidate> candidates, uint32_t error,
+                                       std::optional<uint16_t> protocolId, uint8_t reason) :
+    mHandle(handle), mKind(kind), mSdp(std::move(sdp)), mCandidates(single_threaded_vector(std::move(candidates)).GetView()),
+    mError(error), mReason(reason)
+{
+    if (protocolId.has_value())
+    {
+        mProtocolId = box_value(*protocolId).as<Windows::Foundation::IReference<uint16_t>>();
+    }
+}
+
+MatterCameraSession::MatterCameraSession(std::shared_ptr<ControllerRuntime> runtime, uint64_t handle, uint64_t node,
+                                         uint16_t endpoint, uint16_t requestor) :
+    mRuntime(std::move(runtime)), mHandle(handle), mNode(node), mEndpoint(endpoint), mRequestor(requestor)
+{}
+
+Windows::Foundation::IAsyncOperation<Controller::MatterCameraSignal>
+MatterCameraSession::WaitForSignalAsync(uint32_t timeoutMilliseconds)
+{
+    auto lifetime = get_strong();
+    if (timeoutMilliseconds == 0 || timeoutMilliseconds > 30000)
+    {
+        throw hresult_invalid_argument(L"The signal timeout must be between 1 and 30000 milliseconds.");
+    }
+    if (mWaiting.exchange(true))
+    {
+        throw hresult_illegal_method_call(L"Only one signal consumer is allowed per session.");
+    }
+    struct WaitingGuard
+    {
+        std::atomic_bool & waiting;
+        ~WaitingGuard() { waiting.store(false); }
+    } waitingGuard{ mWaiting };
+    auto canceled = std::make_shared<std::atomic_bool>(false);
+    auto cancellation = co_await get_cancellation_token();
+    cancellation.callback([canceled]() { canceled->store(true, std::memory_order_release); });
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMilliseconds);
+    co_await resume_background();
+    while (true)
+    {
+        if (canceled->load(std::memory_order_acquire))
+        {
+            throw hresult_canceled();
+        }
+        auto signal = mRuntime->PollCameraSignal(mHandle);
+        if (signal)
+        {
+            co_return signal;
+        }
+        if (std::chrono::steady_clock::now() >= deadline)
+        {
+            throw hresult_error(HRESULT_FROM_WIN32(ERROR_TIMEOUT), L"Camera signal wait timed out.");
+        }
+        co_await resume_after(std::chrono::milliseconds(10));
+    }
+}
+
+namespace {
+
+std::vector<Controller::MatterCameraIceCandidate> CameraCandidateValues(
+    Windows::Foundation::Collections::IVectorView<Controller::MatterCameraIceCandidate> candidates)
+{
+    if (!candidates || candidates.Size() == 0 || candidates.Size() > 16)
+    {
+        throw hresult_invalid_argument(L"Between 1 and 16 ICE candidates are required.");
+    }
+    std::vector<Controller::MatterCameraIceCandidate> values;
+    for (auto const & candidate : candidates)
+    {
+        if (!candidate)
+        {
+            throw hresult_invalid_argument(L"ICE candidates cannot contain null entries.");
+        }
+        values.push_back(candidate);
+    }
+    return values;
+}
+
+template <class Operation>
+Controller::MatterCameraOperationResult RunCameraOperation(Controller::MatterCameraStage & stage, Operation operation)
+{
+    try
+    {
+        operation();
+        return winrt::make<implementation::MatterCameraOperationResult>();
+    }
+    catch (hresult_canceled const &)
+    {
+        throw;
+    }
+    catch (ChipOperationError const & error)
+    {
+        return winrt::make<implementation::MatterCameraOperationResult>(
+            winrt::make<implementation::MatterCameraFailure>(stage, int32_t(error.code()), true,
+                error.NativeError().AsInteger(), error.message()));
+    }
+    catch (hresult_error const & error)
+    {
+        return winrt::make<implementation::MatterCameraOperationResult>(
+            winrt::make<implementation::MatterCameraFailure>(stage, int32_t(error.code()), false, uint32_t(0), error.message()));
+    }
+}
+
+} // namespace
+
+Windows::Foundation::IAsyncAction MatterCameraSession::SendCandidatesAsync(
+    Windows::Foundation::Collections::IVectorView<Controller::MatterCameraIceCandidate> candidates)
+{
+    auto lifetime = get_strong();
+    auto values = CameraCandidateValues(candidates);
+    auto canceled = std::make_shared<std::atomic_bool>(false);
+    auto cancellation = co_await get_cancellation_token();
+    cancellation.callback([canceled]() { canceled->store(true, std::memory_order_release); });
+    co_await resume_background();
+    mRuntime->SendCameraCandidates(mHandle, values, canceled);
+}
+
+Windows::Foundation::IAsyncOperation<Controller::MatterCameraOperationResult> MatterCameraSession::TrySendCandidatesAsync(
+    Windows::Foundation::Collections::IVectorView<Controller::MatterCameraIceCandidate> candidates)
+{
+    auto lifetime = get_strong();
+    auto canceled = std::make_shared<std::atomic_bool>(false);
+    auto cancellation = co_await get_cancellation_token();
+    cancellation.callback([canceled]() { canceled->store(true, std::memory_order_release); });
+    auto stage = Controller::MatterCameraStage::Validation;
+    std::vector<Controller::MatterCameraIceCandidate> values;
+    auto validation = RunCameraOperation(stage, [&]() { values = CameraCandidateValues(candidates); });
+    if (!validation.Succeeded())
+    {
+        co_return validation;
+    }
+    co_await resume_background();
+    stage = Controller::MatterCameraStage::IceCandidates;
+    co_return RunCameraOperation(stage, [&]() {
+        if (canceled->load(std::memory_order_acquire))
+        {
+            throw hresult_canceled();
+        }
+        mRuntime->SendCameraCandidates(mHandle, values, canceled);
+    });
+}
+
+Windows::Foundation::IAsyncOperation<Controller::MatterCameraSessionState> MatterCameraSession::GetStateAsync()
+{
+    auto lifetime = get_strong();
+    if (mClosing.load(std::memory_order_acquire) != 0)
+    {
+        co_return Controller::MatterCameraSessionState::Ending;
+    }
+    co_await resume_background();
+    co_return mRuntime->CameraState(mHandle);
+}
+
+namespace {
+
+struct CameraCloseGuard
+{
+    explicit CameraCloseGuard(std::atomic_uint32_t & closing) : mClosing(closing) { ++mClosing; }
+    ~CameraCloseGuard() { --mClosing; }
+    std::atomic_uint32_t & mClosing;
+};
+
+} // namespace
+
+Windows::Foundation::IAsyncAction MatterCameraSession::CloseAsync()
+{
+    auto lifetime = get_strong();
+    CameraCloseGuard closing(mClosing);
+    co_await resume_background();
+    mRuntime->CloseCamera(mHandle);
+}
+
+Windows::Foundation::IAsyncOperation<Controller::MatterCameraOperationResult> MatterCameraSession::TryCloseAsync()
+{
+    auto lifetime = get_strong();
+    CameraCloseGuard closing(mClosing);
+    co_await resume_background();
+    auto stage = Controller::MatterCameraStage::SessionEnd;
+    // Cleanup must finish even when the caller cancels its wait.
+    co_return RunCameraOperation(stage, [&]() { mRuntime->CloseCamera(mHandle); });
+}
+
+MatterControllerCamera::MatterControllerCamera(Controller::MatterController controller)
+{
+    if (!controller)
+    {
+        throw hresult_invalid_argument(L"controller cannot be null.");
+    }
+    mRuntime = get_self<implementation::MatterController>(controller)->Runtime();
+}
+
+bool MatterControllerCamera::IsSignalingSupported()
+{
+    return CHIP_CONTROLLER_BUILD_WEBRTC_SIGNALING != 0;
+}
+
+MatterCameraClusterCapabilities::MatterCameraClusterCapabilities(uint32_t cluster, uint16_t revision, uint32_t features,
+    std::vector<uint32_t> attributes, std::vector<uint32_t> accepted, std::vector<uint32_t> generated) :
+    mCluster(cluster), mRevision(revision), mFeatures(features),
+    mAttributes(single_threaded_vector(std::move(attributes)).GetView()),
+    mAccepted(single_threaded_vector(std::move(accepted)).GetView()),
+    mGenerated(single_threaded_vector(std::move(generated)).GetView())
+{
+    if (revision == 0)
+    {
+        throw hresult_error(E_BOUNDS, L"A camera cluster revision cannot be zero.");
+    }
+}
+
+bool MatterCameraCapabilities::SupportsVideo() const
+{
+    return (mStream.FeatureMap() & uint32_t(chip::app::Clusters::CameraAvStreamManagement::Feature::kVideo)) != 0;
+}
+
+bool MatterCameraCapabilities::SupportsClientOffer() const
+{
+    namespace Commands = chip::app::Clusters::WebRTCTransportProvider::Commands;
+    auto accepted = mTransport.AcceptedCommands();
+    auto generated = mTransport.GeneratedCommands();
+    return SupportsVideo() &&
+        std::find(accepted.begin(), accepted.end(), Commands::ProvideOffer::Id) != accepted.end() &&
+        std::find(accepted.begin(), accepted.end(), Commands::ProvideICECandidates::Id) != accepted.end() &&
+        std::find(accepted.begin(), accepted.end(), Commands::EndSession::Id) != accepted.end() &&
+        std::find(generated.begin(), generated.end(), Commands::ProvideOfferResponse::Id) != generated.end();
+}
+
+Windows::Foundation::IAsyncOperation<Controller::MatterCameraCapabilities>
+MatterControllerCamera::ReadCapabilitiesAsync(uint64_t nodeId, uint16_t endpointId)
+{
+    auto lifetime = get_strong();
+    if (!IsOperationalNodeId(nodeId) || endpointId == kInvalidEndpointId)
+    {
+        throw hresult_invalid_argument(L"A valid operational node and camera endpoint are required.");
+    }
+    auto canceled = std::make_shared<std::atomic_bool>(false);
+    auto cancellation = co_await get_cancellation_token();
+    cancellation.callback([canceled]() { canceled->store(true, std::memory_order_release); });
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(120);
+    co_await resume_background();
+    auto descriptor = ReadEndpointDescriptor(mRuntime, nodeId, endpointId, canceled, deadline);
+    co_return ReadCameraCapabilities(mRuntime, nodeId, descriptor, canceled, deadline);
+}
+
+Windows::Foundation::IAsyncOperation<Windows::Foundation::Collections::IVectorView<Controller::MatterCameraVideoStream>>
+MatterControllerCamera::ReadAllocatedVideoStreamsAsync(uint64_t nodeId, uint16_t endpointId)
+{
+    auto lifetime = get_strong();
+    if (!IsOperationalNodeId(nodeId) || endpointId == kInvalidEndpointId)
+    {
+        throw hresult_invalid_argument(L"A valid operational node and camera endpoint are required.");
+    }
+    auto canceled = std::make_shared<std::atomic_bool>(false);
+    auto cancellation = co_await get_cancellation_token();
+    cancellation.callback([canceled]() { canceled->store(true, std::memory_order_release); });
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(120);
+    co_await resume_background();
+    if (!ReadEndpointDescriptor(mRuntime, nodeId, endpointId, canceled, deadline).HasCameraClusters())
+    {
+        throw hresult_error(E_NOTIMPL, L"The endpoint does not expose camera streaming and WebRTC provider clusters.");
+    }
+    co_return ReadCameraVideoStreams(mRuntime, nodeId, endpointId, canceled, deadline);
+}
+
+namespace {
+
+Controller::MatterCameraSession StartPreparedCamera(
+    std::shared_ptr<ControllerRuntime> const & runtime, uint64_t nodeId, uint16_t endpointId, uint16_t videoStreamId,
+    std::string const & sdp, std::shared_ptr<std::atomic_bool> const & canceled, Controller::MatterCameraStage & stage,
+    std::vector<Controller::MatterCameraIceServer> const & iceServers = {})
+{
+    stage = Controller::MatterCameraStage::Validation;
+    if (canceled->load(std::memory_order_acquire))
+    {
+        throw hresult_canceled();
+    }
+    if (!IsOperationalNodeId(nodeId) || endpointId == kInvalidEndpointId || videoStreamId == UINT16_MAX ||
+        sdp.empty() || sdp.size() > 16384 || sdp.find('\0') != std::string::npos)
+    {
+        throw hresult_invalid_argument(L"A valid camera, allocated video stream, and bounded SDP offer are required.");
+    }
+    runtime->EnsureCameraSignalingEnabled();
+    stage = Controller::MatterCameraStage::Descriptor;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(120);
+    auto descriptor = ReadEndpointDescriptor(runtime, nodeId, endpointId, canceled, deadline);
+    if (!descriptor.HasCameraClusters())
+    {
+        throw hresult_error(E_NOTIMPL, L"The endpoint does not expose camera streaming and WebRTC provider clusters.");
+    }
+    stage = Controller::MatterCameraStage::Capabilities;
+    auto capabilities = ReadCameraCapabilities(runtime, nodeId, descriptor, canceled, deadline);
+    if (!capabilities.SupportsClientOffer())
+    {
+        throw hresult_not_implemented(L"The camera does not advertise video and the required client-offer commands.");
+    }
+    stage = Controller::MatterCameraStage::Privacy;
+    using namespace chip::app::Clusters::CameraAvStreamManagement;
+    auto attributes = capabilities.StreamManagement().Attributes();
+    const chip::AttributeId privacyAttributes[] = {
+        Attributes::HardPrivacyModeOn::Id, Attributes::SoftLivestreamPrivacyModeEnabled::Id
+    };
+    for (auto attribute : privacyAttributes)
+    {
+        if (std::find(attributes.begin(), attributes.end(), attribute) != attributes.end() &&
+            PropertySetScalar<bool>(runtime->ReadAttribute(nodeId, endpointId, Id, attribute, canceled, deadline),
+                                     L"Camera privacy state"))
+        {
+            throw hresult_error(E_ACCESSDENIED, L"Camera privacy mode prevents streaming.");
+        }
+    }
+    stage = Controller::MatterCameraStage::StreamSelection;
+    auto streams = ReadCameraVideoStreams(runtime, nodeId, endpointId, canceled, deadline);
+    bool selected = false;
+    for (auto const & stream : streams)
+    {
+        if (stream.StreamId() == videoStreamId)
+        {
+            selected = stream.IsLiveView();
+        }
+    }
+    if (!selected)
+    {
+        throw hresult_error(E_INVALIDARG, L"The selected video stream is not an allocated LiveView stream.");
+    }
+    stage = Controller::MatterCameraStage::Signaling;
+    return runtime->StartCamera(nodeId, endpointId, videoStreamId, sdp, canceled, iceServers);
+}
+
+Controller::MatterCameraFailureCategory CameraFailureCategory(
+    Controller::MatterCameraStage stage, int32_t result, bool hasNativeError, uint32_t nativeError)
+{
+    using Category = Controller::MatterCameraFailureCategory;
+    if (hasNativeError)
+    {
+        if (nativeError == CHIP_ERROR_TIMEOUT.AsInteger())
+        {
+            return Category::Timeout;
+        }
+        if (nativeError == CHIP_ERROR_BUSY.AsInteger() || nativeError == CHIP_ERROR_NO_MEMORY.AsInteger() ||
+            nativeError == CHIP_IM_GLOBAL_STATUS(ResourceExhausted).AsInteger())
+        {
+            return Category::ResourceExhausted;
+        }
+        if (nativeError == CHIP_ERROR_ACCESS_DENIED.AsInteger() ||
+            nativeError == CHIP_IM_GLOBAL_STATUS(UnsupportedAccess).AsInteger())
+        {
+            return Category::AccessDenied;
+        }
+        if (nativeError == CHIP_ERROR_UNSUPPORTED_CHIP_FEATURE.AsInteger() ||
+            nativeError == CHIP_IM_GLOBAL_STATUS(UnsupportedCluster).AsInteger() ||
+            nativeError == CHIP_IM_GLOBAL_STATUS(UnsupportedCommand).AsInteger() ||
+            nativeError == CHIP_IM_GLOBAL_STATUS(UnsupportedAttribute).AsInteger())
+        {
+            return Category::Unsupported;
+        }
+        if (nativeError == CHIP_ERROR_NOT_CONNECTED.AsInteger() || nativeError == CHIP_ERROR_CONNECTION_ABORTED.AsInteger() ||
+            nativeError == CHIP_ERROR_CONNECTION_CLOSED_UNEXPECTEDLY.AsInteger())
+        {
+            return Category::ConnectionFailure;
+        }
+        if (nativeError == CHIP_ERROR_INCORRECT_STATE.AsInteger() || nativeError == CHIP_ERROR_NOT_FOUND.AsInteger() ||
+            nativeError == CHIP_IM_GLOBAL_STATUS(InvalidInState).AsInteger())
+        {
+            return Category::InvalidState;
+        }
+        if (nativeError == CHIP_ERROR_INVALID_ARGUMENT.AsInteger() ||
+            nativeError == CHIP_IM_GLOBAL_STATUS(ConstraintError).AsInteger())
+        {
+            return stage == Controller::MatterCameraStage::Validation ? Category::InvalidInput : Category::MalformedData;
+        }
+        return Category::Unknown;
+    }
+    if (result == HRESULT_FROM_WIN32(ERROR_TIMEOUT))
+    {
+        return Category::Timeout;
+    }
+    if (result == E_ACCESSDENIED)
+    {
+        return stage == Controller::MatterCameraStage::Privacy ? Category::PrivacyEnabled : Category::AccessDenied;
+    }
+    if (result == E_NOTIMPL)
+    {
+        return Category::Unsupported;
+    }
+    if (result == E_OUTOFMEMORY)
+    {
+        return Category::ResourceExhausted;
+    }
+    if (result == E_INVALIDARG)
+    {
+        return Category::InvalidInput;
+    }
+    if (result == E_BOUNDS || result == E_NOINTERFACE)
+    {
+        return Category::MalformedData;
+    }
+    if (result == winrt::hresult_illegal_method_call().code())
+    {
+        return Category::InvalidState;
+    }
+    return Category::Unknown;
+}
+
+} // namespace
+
+MatterCameraFailure::MatterCameraFailure(Controller::MatterCameraStage stage, int32_t result, bool hasNativeError,
+                                        uint32_t nativeError, hstring message) :
+    mStage(stage), mCategory(CameraFailureCategory(stage, result, hasNativeError, nativeError)), mHResult(result),
+    mHasNativeError(hasNativeError), mNativeError(nativeError), mMessage(std::move(message))
+{}
+
+bool MatterCameraFailure::Retryable() const
+{
+    return mCategory == Controller::MatterCameraFailureCategory::Timeout ||
+        mCategory == Controller::MatterCameraFailureCategory::ConnectionFailure ||
+        mCategory == Controller::MatterCameraFailureCategory::ResourceExhausted;
+}
+
+Windows::Foundation::IAsyncOperation<Controller::MatterCameraSession>
+MatterControllerCamera::StartWithAllocatedVideoStreamAsync(uint64_t nodeId, uint16_t endpointId, uint16_t videoStreamId,
+                                                           hstring offerSdp)
+{
+    auto lifetime = get_strong();
+    const auto sdp = to_string(offerSdp);
+    auto canceled = std::make_shared<std::atomic_bool>(false);
+    auto cancellation = co_await get_cancellation_token();
+    cancellation.callback([canceled]() { canceled->store(true, std::memory_order_release); });
+    co_await resume_background();
+    auto stage = Controller::MatterCameraStage::Validation;
+    co_return StartPreparedCamera(mRuntime, nodeId, endpointId, videoStreamId, sdp, canceled, stage);
+}
+
+Windows::Foundation::IAsyncOperation<Controller::MatterCameraStartResult>
+MatterControllerCamera::TryStartWithAllocatedVideoStreamAsync(uint64_t nodeId, uint16_t endpointId, uint16_t videoStreamId,
+                                                              hstring offerSdp)
+{
+    auto lifetime = get_strong();
+    const auto sdp = to_string(offerSdp);
+    auto canceled = std::make_shared<std::atomic_bool>(false);
+    auto cancellation = co_await get_cancellation_token();
+    cancellation.callback([canceled]() { canceled->store(true, std::memory_order_release); });
+    co_await resume_background();
+    auto stage = Controller::MatterCameraStage::Validation;
+    Controller::MatterCameraStartResult result{ nullptr };
+    try
+    {
+        result = winrt::make<implementation::MatterCameraStartResult>(
+            StartPreparedCamera(mRuntime, nodeId, endpointId, videoStreamId, sdp, canceled, stage));
+    }
+    catch (hresult_canceled const &)
+    {
+        throw;
+    }
+    catch (ChipOperationError const & error)
+    {
+        result = winrt::make<implementation::MatterCameraStartResult>(
+            winrt::make<implementation::MatterCameraFailure>(stage, int32_t(error.code()), true,
+                error.NativeError().AsInteger(), error.message()));
+    }
+    catch (hresult_error const & error)
+    {
+        result = winrt::make<implementation::MatterCameraStartResult>(
+            winrt::make<implementation::MatterCameraFailure>(stage, int32_t(error.code()), false, uint32_t(0), error.message()));
+    }
+    co_return result;
+}
+
+Windows::Foundation::IAsyncOperation<Controller::MatterCameraStartResult>
+MatterControllerCamera::TryStartWithIceServersAsync(uint64_t nodeId, uint16_t endpointId, uint16_t videoStreamId,
+    hstring offerSdp, Windows::Foundation::Collections::IVectorView<Controller::MatterCameraIceServer> iceServers)
+{
+    auto lifetime = get_strong();
+    auto stage = Controller::MatterCameraStage::Validation;
+    std::vector<Controller::MatterCameraIceServer> servers;
+    auto validation = RunCameraOperation(stage, [&]() {
+        if (!iceServers || iceServers.Size() > 4)
+        {
+            throw hresult_invalid_argument(L"An explicit list of zero to four ICE servers is required.");
+        }
+        for (auto const & server : iceServers)
+        {
+            if (!server)
+            {
+                throw hresult_invalid_argument(L"ICE servers cannot contain null entries.");
+            }
+            servers.push_back(server);
+        }
+    });
+    if (!validation.Succeeded())
+    {
+        co_return winrt::make<implementation::MatterCameraStartResult>(validation.Failure());
+    }
+    const auto sdp = to_string(offerSdp);
+    auto canceled = std::make_shared<std::atomic_bool>(false);
+    auto cancellation = co_await get_cancellation_token();
+    cancellation.callback([canceled]() { canceled->store(true, std::memory_order_release); });
+    co_await resume_background();
+    Controller::MatterCameraSession session{ nullptr };
+    auto operation = RunCameraOperation(stage, [&]() {
+        session = StartPreparedCamera(mRuntime, nodeId, endpointId, videoStreamId, sdp, canceled, stage, servers);
+    });
+    if (!operation.Succeeded())
+    {
+        co_return winrt::make<implementation::MatterCameraStartResult>(operation.Failure());
+    }
+    co_return winrt::make<implementation::MatterCameraStartResult>(std::move(session));
+}
+
+MatterEndpointDescriptor::MatterEndpointDescriptor(uint16_t endpointId, std::vector<uint16_t> parts,
+                                                    std::vector<uint32_t> servers, std::vector<uint32_t> clients,
+                                                    std::vector<Controller::MatterDeviceType> types) :
+    mEndpointId(endpointId), mParts(single_threaded_vector(std::move(parts)).GetView()),
+    mServers(single_threaded_vector(std::move(servers)).GetView()),
+    mClients(single_threaded_vector(std::move(clients)).GetView()),
+    mTypes(single_threaded_vector(std::move(types)).GetView())
+{}
+
+bool MatterEndpointDescriptor::HasCameraClusters() const
+{
+    return std::find(mServers.begin(), mServers.end(), chip::app::Clusters::CameraAvStreamManagement::Id) != mServers.end() &&
+        std::find(mServers.begin(), mServers.end(), chip::app::Clusters::WebRTCTransportProvider::Id) != mServers.end();
+}
+
+MatterControllerCameraDiscovery::MatterControllerCameraDiscovery(Controller::MatterController controller)
+{
+    if (!controller)
+    {
+        throw hresult_invalid_argument(L"controller cannot be null.");
+    }
+    mRuntime = get_self<implementation::MatterController>(controller)->Runtime();
+}
+
+Windows::Foundation::IAsyncOperation<Controller::MatterEndpointDescriptor>
+MatterControllerCameraDiscovery::ReadDescriptorAsync(uint64_t nodeId, uint16_t endpointId)
+{
+    if (!IsOperationalNodeId(nodeId) || endpointId == kInvalidEndpointId)
+    {
+        throw hresult_invalid_argument(L"A valid operational node and endpoint are required.");
+    }
+    auto runtime = mRuntime;
+    auto canceled = std::make_shared<std::atomic_bool>(false);
+    auto cancellation = co_await get_cancellation_token();
+    cancellation.callback([canceled]() { canceled->store(true, std::memory_order_release); });
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(120);
+    co_await resume_background();
+    co_return ReadEndpointDescriptor(runtime, nodeId, endpointId, canceled, deadline);
+}
+
+namespace {
+
+Windows::Foundation::Collections::IVectorView<Controller::MatterEndpointDescriptor> DiscoverCameraEndpoints(
+    std::shared_ptr<ControllerRuntime> const & runtime, uint64_t nodeId,
+    std::shared_ptr<std::atomic_bool> const & canceled, Controller::MatterCameraStage & stage)
+{
+    stage = Controller::MatterCameraStage::Validation;
+    if (canceled->load(std::memory_order_acquire))
+    {
+        throw hresult_canceled();
+    }
+    if (!IsOperationalNodeId(nodeId))
+    {
+        throw hresult_invalid_argument(L"A valid operational node is required.");
+    }
+    stage = Controller::MatterCameraStage::Discovery;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(120);
+    std::vector<uint16_t> endpoints{ kRootEndpointId };
+    std::vector<Controller::MatterEndpointDescriptor> cameras;
+    for (size_t i = 0; i < endpoints.size(); ++i)
+    {
+        auto descriptor = ReadEndpointDescriptor(runtime, nodeId, endpoints[i], canceled, deadline);
+        for (const auto endpoint : descriptor.PartsList())
+        {
+            if (endpoint == kInvalidEndpointId || endpoint == endpoints[i])
+            {
+                throw hresult_error(E_BOUNDS, L"The Descriptor PartsList contains an invalid endpoint.");
+            }
+            if (std::find(endpoints.begin(), endpoints.end(), endpoint) == endpoints.end())
+            {
+                if (endpoints.size() == kMaximumDiscoveredEndpoints)
+                {
+                    throw hresult_error(E_BOUNDS, L"Camera discovery exceeds the supported endpoint limit.");
+                }
+                endpoints.push_back(endpoint);
+            }
+        }
+        if (descriptor.HasCameraClusters())
+        {
+            cameras.push_back(std::move(descriptor));
+        }
+    }
+    return single_threaded_vector(std::move(cameras)).GetView();
+}
+
+} // namespace
+
+Windows::Foundation::IAsyncOperation<Windows::Foundation::Collections::IVectorView<Controller::MatterEndpointDescriptor>>
+MatterControllerCameraDiscovery::DiscoverCamerasAsync(uint64_t nodeId)
+{
+    auto lifetime = get_strong();
+    auto canceled = std::make_shared<std::atomic_bool>(false);
+    auto cancellation = co_await get_cancellation_token();
+    cancellation.callback([canceled]() { canceled->store(true, std::memory_order_release); });
+    co_await resume_background();
+    auto stage = Controller::MatterCameraStage::Validation;
+    co_return DiscoverCameraEndpoints(mRuntime, nodeId, canceled, stage);
+}
+
+Windows::Foundation::IAsyncOperation<Controller::MatterCameraDiscoveryResult>
+MatterControllerCameraDiscovery::TryDiscoverCamerasAsync(uint64_t nodeId)
+{
+    auto lifetime = get_strong();
+    auto canceled = std::make_shared<std::atomic_bool>(false);
+    auto cancellation = co_await get_cancellation_token();
+    cancellation.callback([canceled]() { canceled->store(true, std::memory_order_release); });
+    co_await resume_background();
+    auto stage = Controller::MatterCameraStage::Validation;
+    Windows::Foundation::Collections::IVectorView<Controller::MatterEndpointDescriptor> cameras{ nullptr };
+    auto operation = RunCameraOperation(stage, [&]() { cameras = DiscoverCameraEndpoints(mRuntime, nodeId, canceled, stage); });
+    if (!operation.Succeeded())
+    {
+        co_return winrt::make<implementation::MatterCameraDiscoveryResult>(operation.Failure());
+    }
+    co_return winrt::make<implementation::MatterCameraDiscoveryResult>(std::move(cameras));
 }
 
 MatterControllerRecovery::MatterControllerRecovery(Controller::MatterController controller)

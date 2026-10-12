@@ -117,6 +117,10 @@
         <ActivatableClass ActivatableClassId="Matter.Windows.Controller.ControllerOptions" ThreadingModel="both" />
         <ActivatableClass ActivatableClassId="Matter.Windows.Controller.MatterController" ThreadingModel="both" />
         <ActivatableClass ActivatableClassId="Matter.Windows.Controller.OnNetworkCommissioningParameters" ThreadingModel="both" />
+        <ActivatableClass ActivatableClassId="Matter.Windows.Controller.MatterControllerCameraDiscovery" ThreadingModel="both" />
+        <ActivatableClass ActivatableClassId="Matter.Windows.Controller.MatterControllerCamera" ThreadingModel="both" />
+        <ActivatableClass ActivatableClassId="Matter.Windows.Controller.MatterCameraIceCandidate" ThreadingModel="both" />
+        <ActivatableClass ActivatableClassId="Matter.Windows.Controller.MatterCameraIceServer" ThreadingModel="both" />
       </InProcessServer>
     </Extension>
   </Extensions>

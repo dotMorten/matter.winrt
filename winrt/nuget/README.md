@@ -13,6 +13,34 @@ process, and the storage directory is exclusively owned while it is open.
 This preview uses file-backed operational credentials and allows test device
 attestation by default. It is not production security infrastructure.
 
+Camera APIs are experimental and capability-gated by
+`MatterControllerCamera.IsSignalingSupported`. Enable
+`ControllerOptions.EnableCameraSignaling` before creating a camera controller.
+Typed discovery and allocated-video-stream metadata do not prove playback.
+`TryDiscoverCamerasAsync` separates successful empty camera collections from
+structured discovery failures, preserving known native status.
+`ReadCapabilitiesAsync` provides typed cluster revisions, feature maps, and
+attribute/command lists. Video start requires advertised video and the complete
+client-offer command path, not a manufacturer name or assumed endpoint.
+Client-offer signaling delegates stream allocation and deallocation to the
+application. Explicitly close each session before releasing its stream.
+Signal protocol IDs are nullable: null means the identity is not yet known;
+zero is a valid bound ID, not an absent-value sentinel.
+`MatterCameraIceServer` exposes owned, bounded URI arrays and preserves optional
+credentials and CAID. `TryStartWithIceServersAsync` passes caller-supplied STUN/TURN
+configuration to Matter signaling. Configure the external receiver with matching
+servers and supported trust; the SDK does not connect to these servers or persist
+their credentials. Original start APIs and the sample remain server-free.
+`TryStartWithAllocatedVideoStreamAsync` returns structured failure diagnostics
+without reducing native status to HRESULT alone. Cancellation is still WinRT
+cancellation.
+`TrySendCandidatesAsync` and `TryCloseAsync` return structured operation results
+for ICE and bounded End cleanup; the throwing counterparts remain available.
+`GetStateAsync` reports signaling-only negotiation, establishment, ending,
+closure, and failure. Established is not decoded playback.
+The package does not include a decoder or claim live-camera interoperability;
+the repository contains an opt-in WebView2 receiver sample.
+
 For multi-admin commissioning, request a sharing code from the device's
 existing controller and set `OnNetworkCommissioningParameters.SetupCode` to
 the manual code or `MT:` QR payload before calling `CommissionOnNetworkAsync`.

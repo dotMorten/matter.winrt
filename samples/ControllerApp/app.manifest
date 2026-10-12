@@ -23,5 +23,9 @@
     <activatableClass name="Matter.Windows.Controller.ControllerOptions" threadingModel="both" xmlns="urn:schemas-microsoft-com:winrt.v1" />
     <activatableClass name="Matter.Windows.Controller.MatterController" threadingModel="both" xmlns="urn:schemas-microsoft-com:winrt.v1" />
     <activatableClass name="Matter.Windows.Controller.OnNetworkCommissioningParameters" threadingModel="both" xmlns="urn:schemas-microsoft-com:winrt.v1" />
+    <activatableClass name="Matter.Windows.Controller.MatterControllerCameraDiscovery" threadingModel="both" xmlns="urn:schemas-microsoft-com:winrt.v1" />
+    <activatableClass name="Matter.Windows.Controller.MatterControllerCamera" threadingModel="both" xmlns="urn:schemas-microsoft-com:winrt.v1" />
+    <activatableClass name="Matter.Windows.Controller.MatterCameraIceCandidate" threadingModel="both" xmlns="urn:schemas-microsoft-com:winrt.v1" />
+    <activatableClass name="Matter.Windows.Controller.MatterCameraIceServer" threadingModel="both" xmlns="urn:schemas-microsoft-com:winrt.v1" />
   </file>
 </assembly>

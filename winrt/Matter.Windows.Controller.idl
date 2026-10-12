@@ -17,10 +17,21 @@ namespace Matter.Windows.Controller
     runtimeclass ControllerOptions
     {
         ControllerOptions();
-        String StoragePath { get; set; };
-        UInt64 ControllerNodeId { get; set; };
-        UInt32 BluetoothAdapterId { get; set; };
-        Boolean AllowTestAttestation { get; set; };
+        // Keep the published default interface identity and vtable intact.
+        [default]
+        [version(1)]
+        [interface_name("Matter.Windows.Controller.IControllerOptions", A743A4CB-6683-5F06-913E-B0C11040ED9F)]
+        {
+            String StoragePath { get; set; };
+            UInt64 ControllerNodeId { get; set; };
+            UInt32 BluetoothAdapterId { get; set; };
+            Boolean AllowTestAttestation { get; set; };
+        }
+        [version(2)]
+        [interface_name("Matter.Windows.Controller.IControllerOptions2")]
+        {
+            Boolean EnableCameraSignaling { get; set; };
+        }
     };
 
     runtimeclass OnNetworkCommissioningParameters
@@ -202,6 +213,208 @@ namespace Matter.Windows.Controller
         LevelControlCluster GetLevelControlCluster(UInt64 nodeId, UInt16 endpointId);
         BasicInformationCluster GetBasicInformationCluster(UInt64 nodeId, UInt16 endpointId);
         Windows.Foundation.IAsyncAction CloseAsync();
+    };
+
+    enum MatterCameraSignalKind
+    {
+        Answer = 0,
+        Candidates = 1,
+        End = 2,
+        Failure = 3
+    };
+
+    runtimeclass MatterCameraIceCandidate
+    {
+        MatterCameraIceCandidate(String candidate, String mid, Int32 lineIndex);
+        String Candidate { get; };
+        String Mid { get; };
+        Int32 LineIndex { get; };
+    };
+
+    runtimeclass MatterCameraIceServer
+    {
+        MatterCameraIceServer(Windows.Foundation.Collections.IVectorView<String> urls,
+            Boolean hasUsername, String username, Boolean hasCredential, String credential,
+            Windows.Foundation.IReference<UInt16> certificateAuthorityId);
+        Windows.Foundation.Collections.IVectorView<String> Urls { get; };
+        Boolean HasUsername { get; };
+        String Username { get; };
+        Boolean HasCredential { get; };
+        String Credential { get; };
+        Windows.Foundation.IReference<UInt16> CertificateAuthorityId { get; };
+    };
+
+    runtimeclass MatterCameraSignal
+    {
+        UInt64 SessionHandle { get; };
+        MatterCameraSignalKind Kind { get; };
+        String Sdp { get; };
+        Windows.Foundation.Collections.IVectorView<MatterCameraIceCandidate> Candidates { get; };
+        UInt32 NativeError { get; };
+        Windows.Foundation.IReference<UInt16> ProtocolSessionId { get; };
+        UInt8 EndReason { get; };
+    };
+
+    runtimeclass MatterCameraSession
+    {
+        UInt64 Handle { get; };
+        UInt64 NodeId { get; };
+        UInt16 CameraEndpointId { get; };
+        UInt16 RequestorEndpointId { get; };
+        Windows.Foundation.IAsyncOperation<MatterCameraSessionState> GetStateAsync();
+        Windows.Foundation.IAsyncOperation<MatterCameraSignal> WaitForSignalAsync(UInt32 timeoutMilliseconds);
+        Windows.Foundation.IAsyncAction SendCandidatesAsync(Windows.Foundation.Collections.IVectorView<MatterCameraIceCandidate> candidates);
+        Windows.Foundation.IAsyncOperation<MatterCameraOperationResult> TrySendCandidatesAsync(
+            Windows.Foundation.Collections.IVectorView<MatterCameraIceCandidate> candidates);
+        Windows.Foundation.IAsyncAction CloseAsync();
+        Windows.Foundation.IAsyncOperation<MatterCameraOperationResult> TryCloseAsync();
+    };
+
+    enum MatterCameraSessionState
+    {
+        Negotiating = 0,
+        Established = 1,
+        Ending = 2,
+        Closed = 3,
+        Failed = 4
+    };
+
+    runtimeclass MatterControllerCamera
+    {
+        MatterControllerCamera(MatterController controller);
+        static Boolean IsSignalingSupported { get; };
+        Windows.Foundation.IAsyncOperation<MatterCameraCapabilities> ReadCapabilitiesAsync(UInt64 nodeId, UInt16 endpointId);
+        Windows.Foundation.IAsyncOperation<Windows.Foundation.Collections.IVectorView<MatterCameraVideoStream> >
+            ReadAllocatedVideoStreamsAsync(UInt64 nodeId, UInt16 endpointId);
+        Windows.Foundation.IAsyncOperation<MatterCameraSession> StartWithAllocatedVideoStreamAsync(
+            UInt64 nodeId, UInt16 endpointId, UInt16 videoStreamId, String offerSdp);
+        Windows.Foundation.IAsyncOperation<MatterCameraStartResult> TryStartWithAllocatedVideoStreamAsync(
+            UInt64 nodeId, UInt16 endpointId, UInt16 videoStreamId, String offerSdp);
+        Windows.Foundation.IAsyncOperation<MatterCameraStartResult> TryStartWithIceServersAsync(
+            UInt64 nodeId, UInt16 endpointId, UInt16 videoStreamId, String offerSdp,
+            Windows.Foundation.Collections.IVectorView<MatterCameraIceServer> iceServers);
+    };
+
+    enum MatterCameraStage
+    {
+        Validation = 0,
+        Descriptor = 1,
+        Privacy = 2,
+        StreamSelection = 3,
+        Signaling = 4,
+        IceCandidates = 5,
+        SessionEnd = 6,
+        Discovery = 7,
+        Capabilities = 8
+    };
+
+    enum MatterCameraFailureCategory
+    {
+        Unknown = 0,
+        InvalidInput = 1,
+        Unsupported = 2,
+        AccessDenied = 3,
+        PrivacyEnabled = 4,
+        ResourceExhausted = 5,
+        Timeout = 6,
+        ConnectionFailure = 7,
+        MalformedData = 8,
+        InvalidState = 9
+    };
+
+    runtimeclass MatterCameraFailure
+    {
+        MatterCameraStage Stage { get; };
+        MatterCameraFailureCategory Category { get; };
+        Int32 HResult { get; };
+        Boolean HasNativeError { get; };
+        UInt32 NativeError { get; };
+        Boolean Retryable { get; };
+        String Message { get; };
+    };
+
+    runtimeclass MatterCameraStartResult
+    {
+        Boolean Succeeded { get; };
+        MatterCameraSession Session { get; };
+        MatterCameraFailure Failure { get; };
+    };
+
+    runtimeclass MatterCameraOperationResult
+    {
+        Boolean Succeeded { get; };
+        MatterCameraFailure Failure { get; };
+    };
+
+    runtimeclass MatterCameraVideoStream
+    {
+        UInt16 StreamId { get; };
+        UInt8 StreamUsage { get; };
+        Boolean IsLiveView { get; };
+        UInt8 VideoCodec { get; };
+        UInt16 MinimumFrameRate { get; };
+        UInt16 MaximumFrameRate { get; };
+        UInt16 MinimumWidth { get; };
+        UInt16 MinimumHeight { get; };
+        UInt16 MaximumWidth { get; };
+        UInt16 MaximumHeight { get; };
+        UInt32 MinimumBitRate { get; };
+        UInt32 MaximumBitRate { get; };
+        UInt16 KeyFrameInterval { get; };
+        UInt8 ReferenceCount { get; };
+        Windows.Foundation.IReference<Boolean> WatermarkEnabled { get; };
+        Windows.Foundation.IReference<Boolean> OnScreenDisplayEnabled { get; };
+    };
+
+    runtimeclass MatterCameraClusterCapabilities
+    {
+        UInt32 ClusterId { get; };
+        UInt16 Revision { get; };
+        UInt32 FeatureMap { get; };
+        Windows.Foundation.Collections.IVectorView<UInt32> Attributes { get; };
+        Windows.Foundation.Collections.IVectorView<UInt32> AcceptedCommands { get; };
+        Windows.Foundation.Collections.IVectorView<UInt32> GeneratedCommands { get; };
+    };
+
+    runtimeclass MatterCameraCapabilities
+    {
+        MatterEndpointDescriptor Descriptor { get; };
+        MatterCameraClusterCapabilities StreamManagement { get; };
+        MatterCameraClusterCapabilities TransportProvider { get; };
+        Boolean SupportsVideo { get; };
+        Boolean SupportsClientOffer { get; };
+    };
+
+    runtimeclass MatterDeviceType
+    {
+        UInt32 DeviceTypeId { get; };
+        UInt16 Revision { get; };
+    };
+
+    runtimeclass MatterEndpointDescriptor
+    {
+        UInt16 EndpointId { get; };
+        Windows.Foundation.Collections.IVectorView<UInt16> PartsList { get; };
+        Windows.Foundation.Collections.IVectorView<UInt32> ServerClusters { get; };
+        Windows.Foundation.Collections.IVectorView<UInt32> ClientClusters { get; };
+        Windows.Foundation.Collections.IVectorView<MatterDeviceType> DeviceTypes { get; };
+        Boolean HasCameraClusters { get; };
+    };
+
+    runtimeclass MatterControllerCameraDiscovery
+    {
+        MatterControllerCameraDiscovery(MatterController controller);
+        Windows.Foundation.IAsyncOperation<MatterEndpointDescriptor> ReadDescriptorAsync(UInt64 nodeId, UInt16 endpointId);
+        Windows.Foundation.IAsyncOperation<Windows.Foundation.Collections.IVectorView<MatterEndpointDescriptor> >
+            DiscoverCamerasAsync(UInt64 nodeId);
+        Windows.Foundation.IAsyncOperation<MatterCameraDiscoveryResult> TryDiscoverCamerasAsync(UInt64 nodeId);
+    };
+
+    runtimeclass MatterCameraDiscoveryResult
+    {
+        Boolean Succeeded { get; };
+        Windows.Foundation.Collections.IVectorView<MatterEndpointDescriptor> Cameras { get; };
+        MatterCameraFailure Failure { get; };
     };
 
     runtimeclass MatterControllerRecovery

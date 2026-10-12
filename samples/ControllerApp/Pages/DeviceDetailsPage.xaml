@@ -69,6 +69,8 @@
                     </StackPanel>
                 </Border>
 
+                <Button Content="Open camera receiver (development)" Click="OnCameraClicked" />
+
                 <Border
                     Padding="20"
                     CornerRadius="8"

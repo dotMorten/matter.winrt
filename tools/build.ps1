@@ -4,21 +4,31 @@ param(
     [string] $Architecture = "all",
     [string] $Version = "0.1.0-preview.9",
     [string] $OutputDirectory = "artifacts",
-    [switch] $SkipBuild
+    [switch] $SkipBuild,
+    [string] $MatterSdkRoot,
+    [switch] $BuildCameraSignaling
 )
 
 $ErrorActionPreference = "Stop"
 $outerRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $architectures = if ($Architecture -eq "all") { @("x64", "arm64") } else { @($Architecture) }
-$sdkRoot = Join-Path $outerRoot "matterforwindows"
+$sdkRoot = if ([string]::IsNullOrWhiteSpace($MatterSdkRoot)) {
+    Join-Path $outerRoot "matterforwindows"
+} else {
+    (Resolve-Path $MatterSdkRoot).Path
+}
+if ($SkipBuild -and ($BuildCameraSignaling -or -not [string]::IsNullOrWhiteSpace($MatterSdkRoot))) {
+    throw "Explicit SDK or camera build options require rebuilding; they cannot verify existing outputs with -SkipBuild."
+}
 
 foreach ($targetArchitecture in $architectures) {
     $outputName = "win-winrt-$targetArchitecture"
     $outputPath = Join-Path $outerRoot "out\$outputName"
     if (-not $SkipBuild) {
-        & (Join-Path $PSScriptRoot "build-matter.ps1") -Architecture $targetArchitecture
+        & (Join-Path $PSScriptRoot "build-matter.ps1") -Architecture $targetArchitecture `
+            -MatterSdkRoot $sdkRoot -BuildCameraSignaling:$BuildCameraSignaling
         if ($LASTEXITCODE -ne 0) { throw "Matter SDK build failed for $targetArchitecture." }
-        & (Join-Path $PSScriptRoot "build-winrt.ps1") -Architecture $targetArchitecture
+        & (Join-Path $PSScriptRoot "build-winrt.ps1") -Architecture $targetArchitecture -MatterSdkRoot $sdkRoot
         if ($LASTEXITCODE -ne 0) { throw "WinRT component build failed for $targetArchitecture." }
     }
 
@@ -60,7 +70,7 @@ Copy-Item (Join-Path $outerRoot "winrt\nuget\Matter.Windows.Controller.props") `
 Copy-Item (Join-Path $outerRoot "winrt\nuget\Matter.Windows.Controller.targets") `
     (Join-Path $stagingPath "buildTransitive")
 Copy-Item (Join-Path $outerRoot "winrt\nuget\README.md") $stagingPath
-Copy-Item (Join-Path $outerRoot "matterforwindows\LICENSE") $stagingPath
+Copy-Item (Join-Path $sdkRoot "LICENSE") $stagingPath
 
 $nuspec = @"
 <?xml version="1.0"?>

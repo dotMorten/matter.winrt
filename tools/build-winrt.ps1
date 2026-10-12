@@ -1,12 +1,17 @@
 [CmdletBinding()]
 param(
     [ValidateSet("x64", "arm64")]
-    [string] $Architecture = "x64"
+    [string] $Architecture = "x64",
+    [string] $MatterSdkRoot
 )
 
 $ErrorActionPreference = "Stop"
 $matterWinRtRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
-$matterSdkRoot = Join-Path $matterWinRtRoot "matterforwindows"
+$matterSdkRoot = if ([string]::IsNullOrWhiteSpace($MatterSdkRoot)) {
+    Join-Path $matterWinRtRoot "matterforwindows"
+} else {
+    (Resolve-Path $MatterSdkRoot).Path
+}
 $winrtRoot = Join-Path $matterWinRtRoot "winrt"
 $sdkOutputDirectory = Join-Path $matterSdkRoot "out\matter-winrt-sdk-$Architecture"
 $matterLibrary = Join-Path $sdkOutputDirectory "obj\out\matter-winrt-sdk-target\matter-controller-sdk.lib"
@@ -104,6 +109,7 @@ $compilerArguments = @(
     "/GR"
     "/Gy"
     "/Gw"
+    "/bigobj"
     "/MD"
     "/O2"
     "/std:c++20"
@@ -111,6 +117,11 @@ $compilerArguments = @(
 )
 $compilerArguments += $definitions | ForEach-Object { "/D$_" }
 $compilerArguments += $includeDirectories | ForEach-Object { "/I$_" }
+$compilerResponseFile = Join-Path $outputDirectory "compile-options.rsp"
+[System.IO.File]::WriteAllLines(
+    $compilerResponseFile,
+    [string[]]($compilerArguments | ForEach-Object { '"' + $_ + '"' }),
+    [System.Text.UTF8Encoding]::new($false))
 
 $sources = @(
     (Join-Path $generatedDirectory "module.g.cpp")

@@ -39,6 +39,9 @@ public sealed class ControllerSession
                     StoragePath = storagePath,
                     AllowTestAttestation = true
                 };
+#if MATTER_CAMERA_DEVELOPMENT
+                options.EnableCameraSignaling = Environment.GetCommandLineArgs().Contains("--camera", StringComparer.Ordinal);
+#endif
                 Controller = await MatterController.CreateAsync(options);
                 Controller.CommissioningProgress += OnCommissioningProgress;
                 InitializationError = null;
