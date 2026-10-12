@@ -82,7 +82,7 @@ direct development outputs:
 ```powershell
 dotnet build .\samples\ControllerApp\MatterControllerApp.csproj `
     -p:Platform=x64 -p:Unpackaged=true `
-    -p:MatterControllerPackageVersion=0.2.0-camera.13 -p:MatterCameraDevelopment=true
+    -p:MatterControllerPackageVersion=0.2.0-camera.14 -p:MatterCameraDevelopment=true
 ```
 
 The package version property defaults to the existing published preview, and
@@ -101,15 +101,22 @@ native DLL in the package. The sample includes camera class registrations in
 both its unpackaged application manifest and MSIX manifest.
 
 Launch the resulting executable with `--camera`, select a commissioned device,
-and open **Camera receiver (development)**. Discover its camera endpoints, read
-allocated video streams, and choose an **advertised allocated LiveView stream**.
+and open **Camera receiver (development)**. Discover its camera endpoints and
+select **Allocate H.264 LiveView (640x480, 30 fps)**, then **Start receiver**.
+The sample requests 500000-2000000 bits per second and a 1000 ms key-frame
+interval; unsupported defaults fail explicitly. SDK callers can configure
+`MatterCameraVideoStreamOptions` for other supported H.264 LiveView bounds.
+Alternatively, read allocated streams and choose an **advertised allocated
+LiveView stream** whose reference you already own.
 The receiver reads advertised cluster revisions, features, and command lists
 before offering a stream selection, and refuses incomplete video/client-offer
 capabilities. The SDK refreshes these checks again at start.
-Allocation parameters,
-camera/receiver codec compatibility, and later deallocation belong to the
-caller; the receiver does not invent stream IDs or free externally owned
-streams. Explicitly stop the receiver before deallocating its stream.
+Stop, window close, and controller shutdown finish a pending sample allocation,
+end the signaling session, and release the sample-owned reference exactly once.
+Externally allocated streams are never deallocated by the sample: stop the
+receiver before releasing your reference. An uncertain allocation/release
+disables further starts in that window; it never guesses IDs or blindly repeats
+reference-counted deallocation.
 
 The WebView2 page is mapped only to `https://matter-camera.local/receiver.html`.
 This sample intentionally uses no ICE servers. The SDK's typed ICE-server input
@@ -122,9 +129,15 @@ content. The peer connection intersects the selected camera stream codec with ad
 receiver video codecs before generating an offer, uses no ICE servers, and a
 receive-only video transceiver; microphone capture and recording are disabled.
 Successful signaling and a received media track are not playback: playback
-requires a decoded video frame and a matching inbound codec from WebRTC stats.
-Unsupported or mismatched codecs fail explicitly. Missing decoded video fails
-after 30 seconds. Start failures show structured stage/category, native status
+requires a decoded video frame, a matching inbound codec from WebRTC stats,
+and decoded dimensions inside the allocated bounds.
+Unsupported/mismatched codecs or dimensions fail explicitly. Missing decoded
+video fails after 30 seconds; decoded-frame progress stopping for ten seconds
+also fails. During a session, advertised software/hardware privacy is polled
+with one second between bounded reads. Enabling privacy or a privacy-read
+failure stops the receiver and its owned allocation. Polling is not
+instantaneous subscription enforcement.
+Start failures show structured stage/category, native status
 when available, HRESULT, and retryability.
 Discovery, candidate-send, and remote End failures use the same structured diagnostics.
 The host closes the native session when stopping, closing the window, or

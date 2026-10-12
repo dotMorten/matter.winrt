@@ -13,7 +13,7 @@ process, and the storage directory is exclusively owned while it is open.
 This preview uses file-backed operational credentials and allows test device
 attestation by default. It is not production security infrastructure.
 
-Camera APIs are experimental and capability-gated by
+Camera APIs are experimental; signaling is capability-gated by
 `MatterControllerCamera.IsSignalingSupported`. Enable
 `ControllerOptions.EnableCameraSignaling` before creating a camera controller.
 Typed discovery and allocated-video-stream metadata do not prove playback.
@@ -22,8 +22,19 @@ structured discovery failures, preserving known native status.
 `ReadCapabilitiesAsync` provides typed cluster revisions, feature maps, and
 attribute/command lists. Video start requires advertised video and the complete
 client-offer command path, not a manufacturer name or assumed endpoint.
-Client-offer signaling delegates stream allocation and deallocation to the
-application. Explicitly close each session before releasing its stream.
+`AllocateVideoStreamAsync` and `TryAllocateVideoStreamAsync` request a typed
+H.264 LiveView stream with configurable, validated bounds. Options default to
+640x480, 30 fps, 500000-2000000 bits per second, and a 1000 ms key-frame interval.
+Successful allocation transfers one reference to the application. Explicitly
+close the session, then release that reference exactly once with
+`DeallocateVideoStreamAsync` or `TryDeallocateVideoStreamAsync`. Existing start
+APIs never deallocate caller-owned streams. Cancellation/validation failure
+releases a known allocation reference; missing IDs or failed cleanup can leave
+ownership uncertain. Do not blindly retry reference-counted deallocation.
+New allocation and privacy APIs use additive `IMatterControllerCamera2`;
+the original camera interface remains binary compatible.
+`IsPrivacyEnabledAsync` reads advertised software/hardware privacy with a
+30-second aggregate deadline; errors never become a false privacy snapshot.
 Signal protocol IDs are nullable: null means the identity is not yet known;
 zero is a valid bound ID, not an absent-value sentinel.
 `MatterCameraIceServer` exposes owned, bounded URI arrays and preserves optional

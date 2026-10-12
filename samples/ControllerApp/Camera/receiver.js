@@ -50,8 +50,18 @@ async function receive(message) {
         if (selectedCodecs.length === 0) {
             throw new Error("The selected stream codec is not supported by this receiver.");
         }
+        for (const value of [message.minimumWidth, message.maximumWidth, message.minimumHeight, message.maximumHeight]) {
+            if (!Number.isInteger(value) || value < 1 || value > 65535) {
+                throw new Error("Invalid allocated video dimensions.");
+            }
+        }
+        if (message.minimumWidth > message.maximumWidth || message.minimumHeight > message.maximumHeight) {
+            throw new Error("Reversed allocated video dimensions.");
+        }
         peer = new RTCPeerConnection({ iceServers: [], iceTransportPolicy: "all" });
         const ownedPeer = peer;
+        let framesDecoded = new Map();
+        let playing = false;
         mediaDeadline = setTimeout(() => {
             if (peer === ownedPeer) {
                 publish("error", { message: "No decoded video frame within the receiver deadline." });
@@ -81,9 +91,14 @@ async function receive(message) {
             if (peer !== ownedPeer) {
                 return;
             }
+            if (event.track.kind !== "video") {
+                publish("error", { message: "Unexpected non-video media track." });
+                closeReceiver();
+                return;
+            }
             video.srcObject = new MediaStream([event.track]);
             state.textContent = "Media track received; waiting for decoded frames.";
-            video.requestVideoFrameCallback(async () => {
+            const inspectFrame = async () => {
                 if (peer !== ownedPeer) {
                     return;
                 }
@@ -92,28 +107,58 @@ async function receive(message) {
                     if (peer !== ownedPeer) {
                         return;
                     }
-                    let negotiated = false;
-                    statistics.forEach(report => {
-                        if (report.type === "inbound-rtp" && report.kind === "video" && report.codecId) {
+                    let negotiated = true;
+                    let decoded = 0;
+                    let progressed = false;
+                    const currentFrames = new Map();
+                    statistics.forEach((report, id) => {
+                        if (report.type === "inbound-rtp" && report.kind === "video" && report.codecId &&
+                            Number.isSafeInteger(report.framesDecoded) && report.framesDecoded > 0) {
                             const codec = statistics.get(report.codecId);
-                            negotiated = codec && codec.mimeType.toLowerCase() === selectedMimeType;
+                            negotiated = negotiated && codec && codec.mimeType.toLowerCase() === selectedMimeType;
+                            decoded += report.framesDecoded;
+                            currentFrames.set(id, report.framesDecoded);
+                            progressed ||= !framesDecoded.has(id) || report.framesDecoded > framesDecoded.get(id);
                         }
                     });
+                    if (decoded === 0) {
+                        video.requestVideoFrameCallback(inspectFrame);
+                        return;
+                    }
                     if (!negotiated) {
                         throw new Error("The received video codec does not match the selected camera stream.");
                     }
-                } catch {
+                    if (video.videoWidth < message.minimumWidth || video.videoWidth > message.maximumWidth ||
+                        video.videoHeight < message.minimumHeight || video.videoHeight > message.maximumHeight) {
+                        throw new Error("Decoded video dimensions do not match the allocated stream.");
+                    }
+                    framesDecoded = currentFrames;
+                    if (progressed) {
+                        clearTimeout(mediaDeadline);
+                        mediaDeadline = setTimeout(() => {
+                            if (peer === ownedPeer) {
+                                publish("error", { message: "Decoded video stopped progressing for ten seconds." });
+                                closeReceiver();
+                            }
+                        }, 10000);
+                    }
+                } catch (error) {
                     if (peer === ownedPeer) {
-                        publish("error", { message: "Negotiated video codec validation failed." });
+                        publish("error", { message: error.message || "Decoded video or allocated-stream validation failed." });
                         closeReceiver();
                     }
                     return;
                 }
-                clearTimeout(mediaDeadline);
-                mediaDeadline = null;
-                state.textContent = "Live video frame decoded.";
-                publish("media", { state: "playing", codec: selectedMimeType });
-            });
+                if (!playing) {
+                    playing = true;
+                    state.textContent = "Live video frame decoded.";
+                    publish("media", { state: "playing", codec: selectedMimeType });
+                }
+                if (peer === ownedPeer) {
+                    video.requestVideoFrameCallback(inspectFrame);
+                }
+            };
+            video.requestVideoFrameCallback(inspectFrame);
         };
         peer.onconnectionstatechange = () => {
             if (peer === ownedPeer && (peer.connectionState === "failed" || peer.connectionState === "disconnected")) {

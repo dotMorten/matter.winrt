@@ -342,6 +342,72 @@
     <member name="F:Matter.Windows.Controller.MatterCameraStage.Capabilities">
       <summary>Reading and validating advertised features and command paths.</summary>
     </member>
+    <member name="M:Matter.Windows.Controller.MatterControllerCamera.IsPrivacyEnabledAsync(System.UInt64,System.UInt16)">
+      <summary>Reads advertised software/hardware privacy with cancellation and a 30-second aggregate deadline. Returns true if either is enabled; missing attributes are not invented and read/type errors fail explicitly. This snapshot is not instantaneous enforcement.</summary>
+    </member>
+    <member name="M:Matter.Windows.Controller.MatterControllerCamera.AllocateVideoStreamAsync(System.UInt64,System.UInt16,Matter.Windows.Controller.MatterCameraVideoStreamOptions)">
+      <summary>Allocates an H.264 LiveView stream after capability, privacy, sensor and usage validation. Options are snapshotted before background work. Success transfers one reference; close signaling before deallocating it exactly once. Cancellation or validation failure releases a known returned reference; missing IDs or cleanup failure may leave ownership uncertain.</summary>
+    </member>
+    <member name="M:Matter.Windows.Controller.MatterControllerCamera.TryAllocateVideoStreamAsync(System.UInt64,System.UInt16,Matter.Windows.Controller.MatterCameraVideoStreamOptions)">
+      <summary>Allocates with a typed stream-or-failure result and exact known native diagnostics. Success owns one allocation reference. Cancellation remains cancellation; never guess a missing ID or blindly retry uncertain reference-counted deallocation.</summary>
+    </member>
+    <member name="M:Matter.Windows.Controller.MatterControllerCamera.DeallocateVideoStreamAsync(System.UInt64,System.UInt16,System.UInt16)">
+      <summary>Releases exactly one caller-owned allocation reference. Close its signaling session first. Bounded cleanup continues if the caller cancels its wait; an uncertain outcome must not be blindly retried.</summary>
+    </member>
+    <member name="M:Matter.Windows.Controller.MatterControllerCamera.TryDeallocateVideoStreamAsync(System.UInt64,System.UInt16,System.UInt16)">
+      <summary>Releases one caller-owned reference with structured deallocation diagnostics. Cleanup continues after wait cancellation. Failure is not proof that a repeated reference-counted command is safe.</summary>
+    </member>
+    <member name="T:Matter.Windows.Controller.MatterCameraVideoStreamOptions">
+      <summary>Configures nonzero, ordered H.264 LiveView allocation bounds. Defaults are exact 640x480, 30 fps, 500000-2000000 bits per second and a 1000 ms key-frame interval. Unsupported parameters are not silently relaxed.</summary>
+    </member>
+    <member name="M:Matter.Windows.Controller.MatterCameraVideoStreamOptions.#ctor">
+      <summary>Creates the default H.264 LiveView allocation options.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterCameraVideoStreamOptions.MinimumWidth">
+      <summary>Gets or sets the minimum width in pixels; defaults to 640.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterCameraVideoStreamOptions.MaximumWidth">
+      <summary>Gets or sets the maximum width in pixels; defaults to 640.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterCameraVideoStreamOptions.MinimumHeight">
+      <summary>Gets or sets the minimum height in pixels; defaults to 480.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterCameraVideoStreamOptions.MaximumHeight">
+      <summary>Gets or sets the maximum height in pixels; defaults to 480.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterCameraVideoStreamOptions.MinimumFrameRate">
+      <summary>Gets or sets the minimum frame rate in frames per second; defaults to 30.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterCameraVideoStreamOptions.MaximumFrameRate">
+      <summary>Gets or sets the maximum frame rate in frames per second; defaults to 30.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterCameraVideoStreamOptions.MinimumBitRate">
+      <summary>Gets or sets the minimum bitrate in bits per second; defaults to 500000.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterCameraVideoStreamOptions.MaximumBitRate">
+      <summary>Gets or sets the maximum bitrate in bits per second; defaults to 2000000.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterCameraVideoStreamOptions.KeyFrameInterval">
+      <summary>Gets or sets the nonzero key-frame interval in milliseconds; defaults to 1000.</summary>
+    </member>
+    <member name="T:Matter.Windows.Controller.MatterCameraVideoStreamAllocationResult">
+      <summary>Contains either an owned allocation reference with validated metadata or a structured failure. Metadata reads alone do not acquire references.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterCameraVideoStreamAllocationResult.Succeeded">
+      <summary>Gets whether one allocation reference was successfully transferred to the caller.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterCameraVideoStreamAllocationResult.Stream">
+      <summary>Gets validated stream metadata, or null on failure. The caller must release its one allocation reference exactly once after signaling closes.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterCameraVideoStreamAllocationResult.Failure">
+      <summary>Gets the structured failure, or null on success.</summary>
+    </member>
+    <member name="F:Matter.Windows.Controller.MatterCameraStage.StreamAllocation">
+      <summary>Allocating and recovering the camera's returned stream reference.</summary>
+    </member>
+    <member name="F:Matter.Windows.Controller.MatterCameraStage.StreamDeallocation">
+      <summary>Releasing exactly one owned stream reference, including rollback cleanup.</summary>
+    </member>
     <member name="T:Matter.Windows.Controller.MatterCameraDiscoveryResult">
       <summary>Contains a successful typed camera collection or a structured discovery failure. An empty collection is not a failure.</summary>
     </member>

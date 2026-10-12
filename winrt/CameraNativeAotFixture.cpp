@@ -237,9 +237,44 @@ extern "C" __declspec(dllexport) int32_t __stdcall GetCameraVideoStream(void ** 
         fields.Insert(L"8", winrt::box_value(uint64_t(4000000)));
         fields.Insert(L"9", winrt::box_value(uint64_t(2000)));
         fields.Insert(L"10", winrt::box_value(false));
-        fields.Insert(L"12", winrt::box_value(uint64_t(0)));
+        fields.Insert(L"12", winrt::box_value(uint64_t(1)));
         auto stream = winrt::make<winrt::Matter::Windows::Controller::implementation::MatterCameraVideoStream>(fields);
         *value = winrt::detach_abi(stream);
+        return 0;
+    }
+    catch (...)
+    {
+        return winrt::to_hresult();
+    }
+}
+
+extern "C" __declspec(dllexport) int32_t __stdcall GetCameraVideoStreamAllocationResult(int32_t variant, void ** value) noexcept
+{
+    if (value == nullptr || variant < 0 || variant > 1)
+    {
+        return winrt::hresult_invalid_argument().code();
+    }
+    *value = nullptr;
+    try
+    {
+        namespace Implementation = winrt::Matter::Windows::Controller::implementation;
+        namespace Controller = winrt::Matter::Windows::Controller;
+        Controller::MatterCameraVideoStreamAllocationResult result{ nullptr };
+        if (variant == 0)
+        {
+            void * pointer = nullptr;
+            winrt::check_hresult(GetCameraVideoStream(&pointer));
+            Controller::MatterCameraVideoStream stream{ nullptr };
+            winrt::attach_abi(stream, pointer);
+            result = winrt::make<Implementation::MatterCameraVideoStreamAllocationResult>(stream);
+        }
+        else
+        {
+            result = winrt::make<Implementation::MatterCameraVideoStreamAllocationResult>(
+                winrt::make<Implementation::MatterCameraFailure>(Controller::MatterCameraStage::StreamAllocation,
+                    int32_t(0x8007001f), true, CHIP_ERROR_TIMEOUT.AsInteger(), L"Allocation outcome is uncertain."));
+        }
+        *value = winrt::detach_abi(result);
         return 0;
     }
     catch (...)

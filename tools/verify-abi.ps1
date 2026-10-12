@@ -147,6 +147,10 @@ function Compare-WinmdDeclarations {
 
         $baselineBlock = @($Baseline[$key])
         $currentBlock = @($Current[$key])
+        if ($key.StartsWith("enum ")) {
+            $baselineBlock = @($baselineBlock | ForEach-Object { $_.TrimEnd(",") })
+            $currentBlock = @($currentBlock | ForEach-Object { $_.TrimEnd(",") })
+        }
         if ($key.StartsWith("interface ")) {
             $baselineSignature = @($baselineBlock | Where-Object { -not $_.StartsWith("[deprecated(") })
             $currentSignature = @($currentBlock | Where-Object { -not $_.StartsWith("[deprecated(") })

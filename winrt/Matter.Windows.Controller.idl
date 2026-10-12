@@ -283,16 +283,54 @@ namespace Matter.Windows.Controller
     {
         MatterControllerCamera(MatterController controller);
         static Boolean IsSignalingSupported { get; };
-        Windows.Foundation.IAsyncOperation<MatterCameraCapabilities> ReadCapabilitiesAsync(UInt64 nodeId, UInt16 endpointId);
-        Windows.Foundation.IAsyncOperation<Windows.Foundation.Collections.IVectorView<MatterCameraVideoStream> >
-            ReadAllocatedVideoStreamsAsync(UInt64 nodeId, UInt16 endpointId);
-        Windows.Foundation.IAsyncOperation<MatterCameraSession> StartWithAllocatedVideoStreamAsync(
-            UInt64 nodeId, UInt16 endpointId, UInt16 videoStreamId, String offerSdp);
-        Windows.Foundation.IAsyncOperation<MatterCameraStartResult> TryStartWithAllocatedVideoStreamAsync(
-            UInt64 nodeId, UInt16 endpointId, UInt16 videoStreamId, String offerSdp);
-        Windows.Foundation.IAsyncOperation<MatterCameraStartResult> TryStartWithIceServersAsync(
-            UInt64 nodeId, UInt16 endpointId, UInt16 videoStreamId, String offerSdp,
-            Windows.Foundation.Collections.IVectorView<MatterCameraIceServer> iceServers);
+        [default]
+        [version(1)]
+        [interface_name("Matter.Windows.Controller.IMatterControllerCamera", FEE79994-9D20-59E4-8F46-E605626A3C0E)]
+        {
+            Windows.Foundation.IAsyncOperation<MatterCameraCapabilities> ReadCapabilitiesAsync(UInt64 nodeId, UInt16 endpointId);
+            Windows.Foundation.IAsyncOperation<Windows.Foundation.Collections.IVectorView<MatterCameraVideoStream> >
+                ReadAllocatedVideoStreamsAsync(UInt64 nodeId, UInt16 endpointId);
+            Windows.Foundation.IAsyncOperation<MatterCameraSession> StartWithAllocatedVideoStreamAsync(
+                UInt64 nodeId, UInt16 endpointId, UInt16 videoStreamId, String offerSdp);
+            Windows.Foundation.IAsyncOperation<MatterCameraStartResult> TryStartWithAllocatedVideoStreamAsync(
+                UInt64 nodeId, UInt16 endpointId, UInt16 videoStreamId, String offerSdp);
+            Windows.Foundation.IAsyncOperation<MatterCameraStartResult> TryStartWithIceServersAsync(
+                UInt64 nodeId, UInt16 endpointId, UInt16 videoStreamId, String offerSdp,
+                Windows.Foundation.Collections.IVectorView<MatterCameraIceServer> iceServers);
+        }
+        [version(2)]
+        [interface_name("Matter.Windows.Controller.IMatterControllerCamera2")]
+        {
+            Windows.Foundation.IAsyncOperation<Boolean> IsPrivacyEnabledAsync(UInt64 nodeId, UInt16 endpointId);
+            Windows.Foundation.IAsyncOperation<MatterCameraVideoStream> AllocateVideoStreamAsync(
+                UInt64 nodeId, UInt16 endpointId, MatterCameraVideoStreamOptions options);
+            Windows.Foundation.IAsyncOperation<MatterCameraVideoStreamAllocationResult> TryAllocateVideoStreamAsync(
+                UInt64 nodeId, UInt16 endpointId, MatterCameraVideoStreamOptions options);
+            Windows.Foundation.IAsyncAction DeallocateVideoStreamAsync(UInt64 nodeId, UInt16 endpointId, UInt16 videoStreamId);
+            Windows.Foundation.IAsyncOperation<MatterCameraOperationResult> TryDeallocateVideoStreamAsync(
+                UInt64 nodeId, UInt16 endpointId, UInt16 videoStreamId);
+        }
+    };
+
+    runtimeclass MatterCameraVideoStreamOptions
+    {
+        MatterCameraVideoStreamOptions();
+        UInt16 MinimumWidth { get; set; };
+        UInt16 MaximumWidth { get; set; };
+        UInt16 MinimumHeight { get; set; };
+        UInt16 MaximumHeight { get; set; };
+        UInt16 MinimumFrameRate { get; set; };
+        UInt16 MaximumFrameRate { get; set; };
+        UInt32 MinimumBitRate { get; set; };
+        UInt32 MaximumBitRate { get; set; };
+        UInt16 KeyFrameInterval { get; set; };
+    };
+
+    runtimeclass MatterCameraVideoStreamAllocationResult
+    {
+        Boolean Succeeded { get; };
+        MatterCameraVideoStream Stream { get; };
+        MatterCameraFailure Failure { get; };
     };
 
     enum MatterCameraStage
@@ -305,7 +343,9 @@ namespace Matter.Windows.Controller
         IceCandidates = 5,
         SessionEnd = 6,
         Discovery = 7,
-        Capabilities = 8
+        Capabilities = 8,
+        StreamAllocation = 9,
+        StreamDeallocation = 10
     };
 
     enum MatterCameraFailureCategory

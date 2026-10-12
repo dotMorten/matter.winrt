@@ -17,9 +17,37 @@ internal static class Program
     private static extern int GetCameraCapabilities(out IntPtr value);
     [DllImport("CameraNativeAotFixture.dll", ExactSpelling = true)]
     private static extern int GetRetainedCameraSession(IntPtr controller, out IntPtr value);
+    [DllImport("CameraNativeAotFixture.dll", ExactSpelling = true)]
+    private static extern int GetCameraVideoStreamAllocationResult(int variant, out IntPtr value);
 
     private static async Task Main()
     {
+        var streamOptions = new MatterCameraVideoStreamOptions();
+        Require(streamOptions.MinimumWidth == 640 && streamOptions.MaximumWidth == 640 &&
+            streamOptions.MinimumHeight == 480 && streamOptions.MaximumHeight == 480 &&
+            streamOptions.MinimumFrameRate == 30 && streamOptions.MaximumFrameRate == 30 &&
+            streamOptions.MinimumBitRate == 500000 && streamOptions.MaximumBitRate == 2000000 &&
+            streamOptions.KeyFrameInterval == 1000, "NativeAOT video allocation options activation");
+        streamOptions.MaximumWidth = 1280;
+        Require(streamOptions.MaximumWidth == 1280, "NativeAOT typed allocation setters");
+        for (int variant = 0; variant < 2; ++variant)
+        {
+            Marshal.ThrowExceptionForHR(GetCameraVideoStreamAllocationResult(variant, out var allocationPointer));
+            MatterCameraVideoStreamAllocationResult allocation;
+            try
+            {
+                allocation = WinRT.MarshalInspectable<MatterCameraVideoStreamAllocationResult>.FromAbi(allocationPointer);
+            }
+            finally
+            {
+                Marshal.Release(allocationPointer);
+            }
+            Require(allocation.Succeeded == (variant == 0), "Allocation result success discrimination");
+            Require(variant == 0 ? allocation.Stream.StreamId == 7 && allocation.Stream.ReferenceCount == 1 && allocation.Failure is null
+                : allocation.Stream is null && allocation.Failure.Stage == MatterCameraStage.StreamAllocation &&
+                    allocation.Failure.Category == MatterCameraFailureCategory.Timeout && allocation.Failure.HasNativeError,
+                "NativeAOT typed owned allocation or exact failure");
+        }
         Marshal.ThrowExceptionForHR(GetCameraDescriptor(out var pointer));
         MatterEndpointDescriptor descriptor;
         try
@@ -186,7 +214,28 @@ internal static class Program
                     invalidDiscovery.Failure.Stage == MatterCameraStage.Validation &&
                     invalidDiscovery.Failure.Category == MatterCameraFailureCategory.InvalidInput,
                     "NativeAOT discovery failure is not an empty success");
-                var failed = await new MatterControllerCamera(controller).TryStartWithAllocatedVideoStreamAsync(0, 2, 1, "v=0\r\n");
+                var camera = new MatterControllerCamera(controller);
+                bool invalidPrivacyRejected = false;
+                try
+                {
+                    await camera.IsPrivacyEnabledAsync(0, 2);
+                }
+                catch (Exception error) when (error.HResult == unchecked((int)0x80070057))
+                {
+                    invalidPrivacyRejected = true;
+                }
+                Require(invalidPrivacyRejected, "NativeAOT additive privacy interface rejects invalid nodes");
+                var invalidAllocation = await camera.TryAllocateVideoStreamAsync(0, 2, streamOptions);
+                Require(!invalidAllocation.Succeeded && invalidAllocation.Stream is null &&
+                    invalidAllocation.Failure.Stage == MatterCameraStage.Validation &&
+                    invalidAllocation.Failure.Category == MatterCameraFailureCategory.InvalidInput,
+                    "NativeAOT additive allocation interface and validation");
+                var invalidRelease = await camera.TryDeallocateVideoStreamAsync(0, 2, 7);
+                Require(!invalidRelease.Succeeded &&
+                    invalidRelease.Failure.Stage == MatterCameraStage.StreamDeallocation &&
+                    invalidRelease.Failure.Category == MatterCameraFailureCategory.InvalidInput,
+                    "NativeAOT typed deallocation validation");
+                var failed = await camera.TryStartWithAllocatedVideoStreamAsync(0, 2, 1, "v=0\r\n");
                 Require(!failed.Succeeded && failed.Session is null &&
                     failed.Failure.Stage == MatterCameraStage.Validation &&
                     failed.Failure.Category == MatterCameraFailureCategory.InvalidInput &&
@@ -200,6 +249,25 @@ internal static class Program
                     closedDiscovery.Failure.Stage == MatterCameraStage.Discovery &&
                     closedDiscovery.Failure.Category == MatterCameraFailureCategory.InvalidState,
                     "NativeAOT retained discovery client cannot access closed controller");
+                bool closedPrivacyRejected = false;
+                try
+                {
+                    await camera.IsPrivacyEnabledAsync(1, 2);
+                }
+                catch (Exception error) when (error.HResult == unchecked((int)0x8000000e))
+                {
+                    closedPrivacyRejected = true;
+                }
+                Require(closedPrivacyRejected, "A closed controller cannot return a successful privacy snapshot");
+                var closedRootAllocation = await camera.TryAllocateVideoStreamAsync(1, 0, streamOptions);
+                Require(!closedRootAllocation.Succeeded &&
+                    closedRootAllocation.Failure.Stage == MatterCameraStage.Descriptor &&
+                    closedRootAllocation.Failure.Category == MatterCameraFailureCategory.InvalidState,
+                    "Endpoint zero is valid and must reach controller-state validation");
+                var closedRootRelease = await camera.TryDeallocateVideoStreamAsync(1, 0, 7);
+                Require(!closedRootRelease.Succeeded &&
+                    closedRootRelease.Failure.Category == MatterCameraFailureCategory.InvalidState,
+                    "Deallocation must not arbitrarily reject endpoint zero");
             }
         }
         finally
@@ -209,7 +277,7 @@ internal static class Program
                 Directory.Delete(storage, recursive: true);
             }
         }
-        Console.WriteLine("PASS NativeAOT descriptors, discovery outcomes, streams, nullable values, ICE and End results, activation, close and reopen");
+        Console.WriteLine("PASS NativeAOT descriptors, discovery outcomes, streams, allocation options/results, additive APIs, nullable values, ICE and End results, activation, close and reopen");
     }
 
     private static void Require(bool condition, string invariant)

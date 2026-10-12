@@ -134,11 +134,37 @@ frame-rate/resolution/bitrate bounds, key-frame interval, reference count, and
 nullable watermark/OSD flags. Missing optional booleans remain null rather than
 becoming false; unknown codec values remain explicit. Malformed entries,
 reversed bounds, duplicate IDs, and reserved stream identifiers are errors.
-**Stream allocation and deallocation are delegated to the caller.** Select
-parameters and codecs from camera capabilities, allocate through Camera AV
-Stream Management, then pass the returned stream ID. The session never frees a
-caller-owned stream. Release it after closing the session, including on failure.
-The preview does not implement automatic codec/stream selection.
+`AllocateVideoStreamAsync` and `TryAllocateVideoStreamAsync` provide typed
+**H.264 LiveView allocation** through Camera AV Stream Management.
+`MatterCameraVideoStreamOptions` defaults to exact 640x480 at 30 fps,
+500000-2000000 bits per second, and a 1000 ms key-frame interval. Applications
+may set nonzero, ordered resolution/frame-rate/bitrate bounds and a key-frame
+interval before allocation; options are snapshotted before background work.
+Preflight checks advertised video/allocation commands, privacy, sensor limits,
+minimum viewport, and LiveView usage. The returned stream must match the
+request and have a positive reference count. The SDK does not choose another
+codec or silently relax unsupported parameters.
+
+A successful allocation transfers **one allocation reference** to the caller,
+even when another client shares the returned stream ID. Close the signaling
+session, then release that reference exactly once with
+`DeallocateVideoStreamAsync` or `TryDeallocateVideoStreamAsync`. Metadata reads
+do not acquire references, and existing start APIs never release caller-owned
+streams. Structured allocation results contain either a stream or a failure,
+including allocation/deallocation stages and exact known native status.
+Cancellation remains cancellation. A dispatched allocation is allowed to finish
+so cancellation or metadata-validation failure can release its known reference.
+Missing/reserved response IDs or failed cleanup can leave remote ownership
+uncertain: do not guess an ID or blindly retry reference-counted deallocation.
+Deallocation continues its bounded cleanup even if the asynchronous wait is
+canceled. The original camera interface remains unchanged; allocation and
+privacy methods use the additive `IMatterControllerCamera2` interface.
+
+`IsPrivacyEnabledAsync` reads the current advertised software/hardware privacy
+attributes with cancellation and a 30-second aggregate deadline. Either enabled
+attribute returns true; absent attributes are not invented, and read or type
+errors fail rather than returning false. This snapshot is not a subscription or
+an instantaneous privacy-enforcement guarantee.
 `MatterCameraIceServer` provides owned typed URI arrays, independent optional
 username/credential presence, and a nullable certificate-authority ID. Explicit
 empty credentials and CAID zero stay present. Use `TryStartWithIceServersAsync`
@@ -200,12 +226,15 @@ also remains available.
 
 The [receiver sample](samples/ControllerApp/README.md#camera-receiver-development)
 uses trusted WebView2 content to receive video only. It reports playback only
-after a decoded frame and matching negotiated codec, never after successful
-signaling. It offers only the selected stream codec when WebView2 advertises it.
-This remains a
-development preview: live-camera transport/playback, complete product cluster
-composition, packaged consumption, and interoperability acceptance are not
-verified.
+after a decoded frame, matching negotiated codec, and dimensions within the
+allocation, never after successful signaling. It offers only the selected stream
+codec when WebView2 advertises it, monitors decoded-frame progress, and polls
+advertised privacy between bounded reads. The sample can allocate its own stream
+and ends signaling before releasing that reference on Stop, window close, or
+controller shutdown. Externally allocated streams remain caller-owned.
+This remains a development preview: physical-camera transport/playback,
+complete product cluster composition, installed-app execution, and
+interoperability acceptance are not verified.
 
 For coordinated SDK development, both native build stages accept
 `-MatterSdkRoot <path>` to build against an explicit working Matter SDK checkout
@@ -228,9 +257,9 @@ pin or overwriting the published preview version:
 
 ```powershell
 .\tools\build.ps1 -Architecture all -MatterSdkRoot C:\src\matterforwindows `
-    -BuildCameraSignaling     -Version 0.2.0-camera.13
+    -BuildCameraSignaling -Version 0.2.0-camera.14
 .\tools\test-camera-nativeaot.ps1 -MatterSdkRoot C:\src\matterforwindows `
-    -PackageVersion 0.2.0-camera.13
+    -PackageVersion 0.2.0-camera.14
 ```
 
 Explicit development build options cannot be combined with `-SkipBuild`, which
@@ -247,9 +276,13 @@ The C++ projection tests exercise typed numeric and structured collections,
 bridge-versus-camera classification, and opt-in controller close/reopen. The
 x64 NativeAOT client uses a test-only native fixture to exercise typed descriptor
 collections across the DLL boundary and runs real controller activation and
-close/reopen, typed allocated streams, nullable flags, and structured failures.
+close/reopen, typed allocated streams, allocation options/results, the additive
+camera interface, privacy input/lifecycle errors, nullable flags, and structured
+failures. Allocation ownership tests cover 100 cancellation/release races and
+preserve uncertain release failures without repeating deallocation.
 Receiver tests use simulated peer connections, including early ICE,
-stale callbacks, payload/queue limits, and 100 local start/stop cycles. None of
+stale callbacks, decoded dimension bounds/progress, payload/queue limits, and
+100 local start/stop cycles. None of
 these tests establish live-device discovery, actual WebRTC media, or 100 camera
 sessions. Run ARM64 executables on an ARM64 host.
 

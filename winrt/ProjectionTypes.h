@@ -30,6 +30,8 @@
 #include "MatterCameraIceCandidate.g.h"
 #include "MatterCameraIceServer.g.h"
 #include "MatterCameraVideoStream.g.h"
+#include "MatterCameraVideoStreamOptions.g.h"
+#include "MatterCameraVideoStreamAllocationResult.g.h"
 #include "MatterCameraFailure.g.h"
 #include "MatterCameraStartResult.g.h"
 #include "MatterCameraOperationResult.g.h"
@@ -52,6 +54,7 @@
 #include <mutex>
 #include <optional>
 #include <vector>
+#include <clusters/CameraAvStreamManagement/Commands.h>
 
 namespace winrt::Matter::Windows::Controller::implementation {
 
@@ -535,8 +538,58 @@ struct MatterControllerCamera : MatterControllerCameraT<MatterControllerCamera>
     Windows::Foundation::IAsyncOperation<Controller::MatterCameraStartResult> TryStartWithIceServersAsync(
         uint64_t nodeId, uint16_t endpointId, uint16_t videoStreamId, hstring offerSdp,
         Windows::Foundation::Collections::IVectorView<Controller::MatterCameraIceServer> iceServers);
+    Windows::Foundation::IAsyncOperation<Controller::MatterCameraVideoStream> AllocateVideoStreamAsync(
+        uint64_t nodeId, uint16_t endpointId, Controller::MatterCameraVideoStreamOptions options);
+    Windows::Foundation::IAsyncOperation<bool> IsPrivacyEnabledAsync(uint64_t nodeId, uint16_t endpointId);
+    Windows::Foundation::IAsyncOperation<Controller::MatterCameraVideoStreamAllocationResult> TryAllocateVideoStreamAsync(
+        uint64_t nodeId, uint16_t endpointId, Controller::MatterCameraVideoStreamOptions options);
+    Windows::Foundation::IAsyncAction DeallocateVideoStreamAsync(uint64_t nodeId, uint16_t endpointId, uint16_t videoStreamId);
+    Windows::Foundation::IAsyncOperation<Controller::MatterCameraOperationResult> TryDeallocateVideoStreamAsync(
+        uint64_t nodeId, uint16_t endpointId, uint16_t videoStreamId);
 private:
     std::shared_ptr<ControllerRuntime> mRuntime;
+};
+
+struct MatterCameraVideoStreamOptions : MatterCameraVideoStreamOptionsT<MatterCameraVideoStreamOptions>
+{
+    MatterCameraVideoStreamOptions();
+    uint16_t MinimumWidth() const { return mRequest.minResolution.width; }
+    void MinimumWidth(uint16_t value) { mRequest.minResolution.width = value; }
+    uint16_t MaximumWidth() const { return mRequest.maxResolution.width; }
+    void MaximumWidth(uint16_t value) { mRequest.maxResolution.width = value; }
+    uint16_t MinimumHeight() const { return mRequest.minResolution.height; }
+    void MinimumHeight(uint16_t value) { mRequest.minResolution.height = value; }
+    uint16_t MaximumHeight() const { return mRequest.maxResolution.height; }
+    void MaximumHeight(uint16_t value) { mRequest.maxResolution.height = value; }
+    uint16_t MinimumFrameRate() const { return mRequest.minFrameRate; }
+    void MinimumFrameRate(uint16_t value) { mRequest.minFrameRate = value; }
+    uint16_t MaximumFrameRate() const { return mRequest.maxFrameRate; }
+    void MaximumFrameRate(uint16_t value) { mRequest.maxFrameRate = value; }
+    uint32_t MinimumBitRate() const { return mRequest.minBitRate; }
+    void MinimumBitRate(uint32_t value) { mRequest.minBitRate = value; }
+    uint32_t MaximumBitRate() const { return mRequest.maxBitRate; }
+    void MaximumBitRate(uint32_t value) { mRequest.maxBitRate = value; }
+    uint16_t KeyFrameInterval() const { return mRequest.keyFrameInterval; }
+    void KeyFrameInterval(uint16_t value) { mRequest.keyFrameInterval = value; }
+    chip::app::Clusters::CameraAvStreamManagement::Commands::VideoStreamAllocate::Type Snapshot() const;
+    static void ValidateAllocated(
+        chip::app::Clusters::CameraAvStreamManagement::Commands::VideoStreamAllocate::Type const & request,
+        Controller::MatterCameraVideoStream const & stream);
+private:
+    chip::app::Clusters::CameraAvStreamManagement::Commands::VideoStreamAllocate::Type mRequest;
+};
+
+struct MatterCameraVideoStreamAllocationResult :
+    MatterCameraVideoStreamAllocationResultT<MatterCameraVideoStreamAllocationResult>
+{
+    explicit MatterCameraVideoStreamAllocationResult(Controller::MatterCameraVideoStream stream) : mStream(std::move(stream)) {}
+    explicit MatterCameraVideoStreamAllocationResult(Controller::MatterCameraFailure failure) : mFailure(std::move(failure)) {}
+    bool Succeeded() const { return mStream != nullptr; }
+    Controller::MatterCameraVideoStream Stream() const { return mStream; }
+    Controller::MatterCameraFailure Failure() const { return mFailure; }
+private:
+    Controller::MatterCameraVideoStream mStream{ nullptr };
+    Controller::MatterCameraFailure mFailure{ nullptr };
 };
 
 struct MatterCameraFailure : MatterCameraFailureT<MatterCameraFailure>
@@ -765,6 +818,8 @@ struct MatterControllerCameraDiscovery :
     MatterControllerCameraDiscoveryT<MatterControllerCameraDiscovery, implementation::MatterControllerCameraDiscovery>
 {};
 struct MatterControllerCamera : MatterControllerCameraT<MatterControllerCamera, implementation::MatterControllerCamera> {};
+struct MatterCameraVideoStreamOptions :
+    MatterCameraVideoStreamOptionsT<MatterCameraVideoStreamOptions, implementation::MatterCameraVideoStreamOptions> {};
 struct MatterCameraIceCandidate : MatterCameraIceCandidateT<MatterCameraIceCandidate, implementation::MatterCameraIceCandidate> {};
 struct MatterCameraIceServer : MatterCameraIceServerT<MatterCameraIceServer, implementation::MatterCameraIceServer> {};
 struct MatterControllerNetworkCommissioning :

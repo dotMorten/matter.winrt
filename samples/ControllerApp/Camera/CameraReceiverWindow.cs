@@ -11,11 +11,12 @@ namespace MatterControllerApp.Camera;
 
 public sealed class CameraReceiverWindow : Window
 {
+    private static readonly HashSet<CameraReceiverWindow> openWindows = [];
     private const string ReceiverUri = "https://matter-camera.local/receiver.html";
     private readonly MatterController controller;
     private readonly ulong nodeId;
     private readonly WebView2 browser = new();
-    private readonly NumberBox endpoint = new() { Header = "Discovered camera endpoint", Minimum = 1, Maximum = 65534 };
+    private readonly NumberBox endpoint = new() { Header = "Discovered camera endpoint", Minimum = 0, Maximum = 65534 };
     private readonly ComboBox stream = new() { Header = "Advertised allocated LiveView stream" };
     private readonly TextBlock status = new() { Text = "Discover camera endpoints before starting." };
     private readonly Button start = new() { Content = "Start receiver", IsEnabled = false };
@@ -28,8 +29,11 @@ public sealed class CameraReceiverWindow : Window
     private CancellationTokenSource? sessionCancellation;
     private MatterCameraSession? session;
     private Task? signalTask;
+    private Task? privacyTask;
     private Task? startTask;
+    private Task? allocationTask;
     private Task? stopTask;
+    private Task? closeTask;
     private ushort selectedEndpoint;
     private ushort selectedStream;
     private byte selectedCodec;
@@ -39,6 +43,10 @@ public sealed class CameraReceiverWindow : Window
     private bool loading;
     private bool closing;
     private bool closed;
+    private ushort? ownedStream;
+    private ushort ownedStreamEndpoint;
+    private bool deallocationAttempted;
+    private bool ownershipUncertain;
 
     public CameraReceiverWindow(MatterController controller, ulong nodeId)
     {
@@ -51,10 +59,12 @@ public sealed class CameraReceiverWindow : Window
         StackPanel controls = new() { Spacing = 8 };
         Button discover = new() { Content = "Discover camera endpoints" };
         Button refreshStreams = new() { Content = "Read allocated video streams" };
+        Button allocate = new() { Content = "Allocate H.264 LiveView (640x480, 30 fps)" };
         Button stop = new() { Content = "Stop" };
         controls.Children.Add(discover);
         controls.Children.Add(endpoint);
         controls.Children.Add(refreshStreams);
+        controls.Children.Add(allocate);
         controls.Children.Add(stream);
         controls.Children.Add(start);
         controls.Children.Add(stop);
@@ -66,6 +76,12 @@ public sealed class CameraReceiverWindow : Window
         root.Loaded += OnLoaded;
         discover.Click += async (_, _) =>
         {
+            if (closing || sessionCancellation is not null || allocationTask is not null || ownedStream is not null ||
+                stopTask is not null)
+            {
+                status.Text = "Stop the owned receiver and allocation before discovering another camera.";
+                return;
+            }
             try
             {
                 var result = await new MatterControllerCameraDiscovery(controller).TryDiscoverCamerasAsync(nodeId);
@@ -87,10 +103,36 @@ public sealed class CameraReceiverWindow : Window
             }
         };
         start.Click += OnStart;
+        allocate.Click += async (_, _) =>
+        {
+            if (sessionCancellation is not null || allocationTask is not null || stopTask is not null ||
+                ownedStream is not null || ownershipUncertain || closing || !double.IsFinite(endpoint.Value) ||
+                endpoint.Value < 0 || endpoint.Value > 65534 || endpoint.Value != Math.Truncate(endpoint.Value))
+            {
+                status.Text = "Select a camera endpoint and stop existing owned resources before allocating.";
+                return;
+            }
+            allocate.IsEnabled = false;
+            allocationTask = AllocateStreamAsync(checked((ushort)endpoint.Value));
+            try
+            {
+                await allocationTask;
+            }
+            catch (Exception error)
+            {
+                status.Text = $"Allocation failed: {error.Message}";
+            }
+            finally
+            {
+                allocationTask = null;
+                allocate.IsEnabled = !closing && !ownershipUncertain;
+            }
+        };
         refreshStreams.Click += async (_, _) =>
         {
-            if (sessionCancellation is not null || closing || !double.IsFinite(endpoint.Value) ||
-                endpoint.Value < 1 || endpoint.Value > 65534 || endpoint.Value != Math.Truncate(endpoint.Value))
+            if (sessionCancellation is not null || allocationTask is not null || stopTask is not null || closing ||
+                !double.IsFinite(endpoint.Value) || endpoint.Value < 0 || endpoint.Value > 65534 ||
+                endpoint.Value != Math.Truncate(endpoint.Value))
             {
                 status.Text = "Select a camera endpoint while the receiver is stopped.";
                 return;
@@ -150,13 +192,69 @@ public sealed class CameraReceiverWindow : Window
             {
                 return;
             }
-            closing = true;
-            await StopAsync();
-            messages.Writer.TryComplete();
-            browser.Close();
-            closed = true;
-            Close();
+            await CloseReceiverAsync();
         };
+        openWindows.Add(this);
+    }
+
+    public static async Task CloseAllAsync()
+    {
+        foreach (var window in openWindows.ToArray())
+        {
+            await window.CloseReceiverAsync();
+        }
+    }
+
+    private Task CloseReceiverAsync() => closeTask ??= CloseReceiverCoreAsync();
+
+    private async Task CloseReceiverCoreAsync()
+    {
+        if (closed)
+        {
+            return;
+        }
+        closing = true;
+        await StopAsync();
+        messages.Writer.TryComplete();
+        browser.Close();
+        closed = true;
+        openWindows.Remove(this);
+        Close();
+    }
+
+    private async Task AllocateStreamAsync(ushort cameraEndpoint)
+    {
+        status.Text = "Checking camera capabilities and privacy, then allocating an owned H.264 stream.";
+        // A dispatched allocation must finish so Stop can recover and release its reference.
+        var result = await new MatterControllerCamera(controller).TryAllocateVideoStreamAsync(
+            nodeId, cameraEndpoint, new MatterCameraVideoStreamOptions());
+        if (!result.Succeeded)
+        {
+            ownershipUncertain = result.Failure.Stage == MatterCameraStage.StreamDeallocation ||
+                (result.Failure.Stage == MatterCameraStage.StreamAllocation &&
+                 result.Failure.Category is MatterCameraFailureCategory.Timeout or
+                    MatterCameraFailureCategory.ConnectionFailure or MatterCameraFailureCategory.MalformedData or
+                    MatterCameraFailureCategory.Unknown);
+            throw new InvalidOperationException(DescribeFailure(result.Failure));
+        }
+        var allocated = result.Stream;
+        ownedStream = allocated.StreamId;
+        ownedStreamEndpoint = cameraEndpoint;
+        deallocationAttempted = false;
+        if (closing || stopTask is not null)
+        {
+            return;
+        }
+        stream.Items.Clear();
+        stream.Items.Add(new ComboBoxItem
+        {
+            Content = $"Owned H.264 stream {allocated.StreamId}, " +
+                $"{allocated.MinimumWidth}x{allocated.MinimumHeight}, {allocated.MinimumFrameRate} fps",
+            Tag = allocated
+        });
+        stream.SelectedIndex = 0;
+        streamEndpoint = cameraEndpoint;
+        status.Text = "Owned stream allocated. Start the receiver; Stop ends the session and releases this reference.";
     }
 
     private async void OnLoaded(object sender, RoutedEventArgs args)
@@ -183,7 +281,8 @@ public sealed class CameraReceiverWindow : Window
             browser.CoreWebView2.NavigationCompleted += (_, navigation) =>
             {
                 ready = navigation.IsSuccess;
-                start.IsEnabled = ready && sessionCancellation is null && stopTask is null;
+                start.IsEnabled = ready && sessionCancellation is null && stopTask is null &&
+                    allocationTask is null && !ownershipUncertain;
                 if (!ready)
                 {
                     status.Text = "Trusted receiver content could not load.";
@@ -201,12 +300,18 @@ public sealed class CameraReceiverWindow : Window
 
     private void OnStart(object sender, RoutedEventArgs args)
     {
-        if (!ready || closing || stopTask is not null || sessionCancellation is not null ||
-            !double.IsFinite(endpoint.Value) || endpoint.Value < 1 || endpoint.Value > 65534 ||
+        if (!ready || closing || stopTask is not null || allocationTask is not null || ownershipUncertain ||
+            sessionCancellation is not null ||
+            !double.IsFinite(endpoint.Value) || endpoint.Value < 0 || endpoint.Value > 65534 ||
             endpoint.Value != Math.Truncate(endpoint.Value) || streamEndpoint != endpoint.Value ||
             stream.SelectedItem is not ComboBoxItem { Tag: MatterCameraVideoStream advertised })
         {
             status.Text = "Choose a camera endpoint and an already allocated LiveView video stream.";
+            return;
+        }
+        if (ownedStream is not null && (advertised.StreamId != ownedStream || endpoint.Value != ownedStreamEndpoint))
+        {
+            status.Text = "Stop the owned allocation before selecting an externally allocated stream.";
             return;
         }
         sessionCancellation = new CancellationTokenSource();
@@ -216,7 +321,12 @@ public sealed class CameraReceiverWindow : Window
         token = Guid.NewGuid().ToString("N");
         start.IsEnabled = false;
         status.Text = "Generating a video-only offer. Microphone and recording are disabled.";
-        Send(new { type = "start", token, videoCodec = selectedCodec });
+        Send(new
+        {
+            type = "start", token, videoCodec = selectedCodec,
+            minimumWidth = advertised.MinimumWidth, maximumWidth = advertised.MaximumWidth,
+            minimumHeight = advertised.MinimumHeight, maximumHeight = advertised.MaximumHeight
+        });
     }
 
     private void OnMessage(CoreWebView2 sender, CoreWebView2WebMessageReceivedEventArgs args)
@@ -293,6 +403,10 @@ public sealed class CameraReceiverWindow : Window
                         await StopAsync();
                     }
                 }
+                else if (type == "error")
+                {
+                    throw new InvalidOperationException(message.GetProperty("message").GetString() ?? "Receiver failed.");
+                }
                 else
                 {
                     throw new InvalidOperationException("Receiver failed or sent an unsupported bridge message.");
@@ -335,6 +449,35 @@ public sealed class CameraReceiverWindow : Window
         session = started;
         status.Text = "Offer accepted; waiting for answer and ICE. Playback is not established.";
         signalTask = ReceiveSignalsAsync(started, ownerToken, owner.Token);
+        privacyTask = MonitorPrivacyAsync(selectedEndpoint, owner.Token);
+    }
+
+    private async Task MonitorPrivacyAsync(ushort cameraEndpoint, CancellationToken cancellation)
+    {
+        try
+        {
+            var camera = new MatterControllerCamera(controller);
+            while (!cancellation.IsCancellationRequested)
+            {
+                if (await camera.IsPrivacyEnabledAsync(nodeId, cameraEndpoint).AsTask(cancellation))
+                {
+                    cancellation.ThrowIfCancellationRequested();
+                    status.Text = "Camera privacy is enabled; stopping the owned receiver and allocation.";
+                    DispatcherQueue.TryEnqueue(async () => await StopAsync());
+                    return;
+                }
+                await Task.Delay(1000, cancellation);
+            }
+        }
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
+        {
+            // Stop owns session End and any sample-owned deallocation.
+        }
+        catch (Exception error)
+        {
+            status.Text = $"Privacy monitoring failed: {error.Message}";
+            DispatcherQueue.TryEnqueue(async () => await StopAsync());
+        }
     }
 
     private async Task ReceiveSignalsAsync(MatterCameraSession ownedSession, string ownerToken, CancellationToken cancellation)
@@ -408,7 +551,7 @@ public sealed class CameraReceiverWindow : Window
     {
         await cleanup;
         stopTask = null;
-        start.IsEnabled = ready && !closing;
+        start.IsEnabled = ready && !closing && !ownershipUncertain;
     }
 
     private async Task StopCoreAsync()
@@ -418,12 +561,39 @@ public sealed class CameraReceiverWindow : Window
         cancellation?.Cancel();
         if (ready)
         {
-            Send(new { type = "stop", token });
+            try
+            {
+                Send(new { type = "stop", token });
+            }
+            catch (Exception error)
+            {
+                status.Text = $"Receiver bridge stop failed; continuing native cleanup: {error.Message}";
+                ready = false;
+                try
+                {
+                    browser.Close();
+                }
+                catch (Exception closeError)
+                {
+                    status.Text = $"Receiver close also failed; continuing native cleanup: {closeError.Message}";
+                }
+            }
         }
         var ownedSession = session;
         session = null;
         try
         {
+            if (allocationTask is not null)
+            {
+                try
+                {
+                    await allocationTask;
+                }
+                catch (Exception error)
+                {
+                    status.Text = $"Allocation failed during cleanup: {error.Message}";
+                }
+            }
             if (startTask is not null)
             {
                 try
@@ -445,6 +615,11 @@ public sealed class CameraReceiverWindow : Window
                 await signalTask;
                 signalTask = null;
             }
+            if (privacyTask is not null)
+            {
+                await privacyTask;
+                privacyTask = null;
+            }
             if (ownedSession is not null)
             {
                 var result = await ownedSession.TryCloseAsync();
@@ -460,6 +635,31 @@ public sealed class CameraReceiverWindow : Window
         }
         finally
         {
+            if (ownedStream is ushort streamId && !deallocationAttempted)
+            {
+                deallocationAttempted = true;
+                try
+                {
+                    var result = await new MatterControllerCamera(controller).TryDeallocateVideoStreamAsync(
+                        nodeId, ownedStreamEndpoint, streamId);
+                    if (result.Succeeded)
+                    {
+                        ownedStream = null;
+                        stream.Items.Clear();
+                        streamEndpoint = null;
+                    }
+                    else
+                    {
+                        ownershipUncertain = true;
+                        status.Text = $"Owned stream release failed; do not blindly retry: {DescribeFailure(result.Failure)}";
+                    }
+                }
+                catch (Exception error)
+                {
+                    ownershipUncertain = true;
+                    status.Text = $"Owned stream release outcome is uncertain: {error.Message}";
+                }
+            }
             cancellation?.Dispose();
         }
     }

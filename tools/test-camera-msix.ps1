@@ -28,7 +28,7 @@ try {
     }
     $registered = @($manifest.SelectNodes("//*[local-name()='InProcessServer'][*[local-name()='Path']='Matter.Windows.Controller.dll']/*[local-name()='ActivatableClass']") |
         ForEach-Object { $_.ActivatableClassId })
-    foreach ($type in @("MatterControllerCameraDiscovery", "MatterControllerCamera", "MatterCameraIceCandidate", "MatterCameraIceServer")) {
+    foreach ($type in @("MatterControllerCameraDiscovery", "MatterControllerCamera", "MatterCameraIceCandidate", "MatterCameraIceServer", "MatterCameraVideoStreamOptions")) {
         if ("Matter.Windows.Controller.$type" -notin $registered) {
             throw "Camera MSIX does not register $type for native WinRT activation."
         }

@@ -1,4 +1,5 @@
 #include "ProjectionTypes.h"
+#include "CameraVideoStreamAllocation.h"
 
 #include <clusters/CameraAvStreamManagement/ClusterId.h>
 #include <clusters/Descriptor/ClusterId.h>
@@ -69,6 +70,119 @@ void TestTypedDescriptors()
 }
 
 void TestControllerLifecycle();
+
+winrt::Windows::Foundation::IAsyncOperation<Controller::MatterCameraVideoStream> CompleteAllocationForTest(
+    Controller::MatterCameraVideoStream stream, std::shared_ptr<Implementation::PendingCameraVideoStream> owner,
+    std::shared_ptr<std::atomic_bool> canceled)
+{
+    auto cancellation = co_await winrt::get_cancellation_token();
+    cancellation.callback([owner, canceled] {
+        canceled->store(true);
+        owner->Cancel();
+    });
+    co_await winrt::resume_background();
+    owner->Record(stream.StreamId());
+    co_return stream;
+}
+
+void TestVideoAllocationOwnership()
+{
+    using Options = Implementation::MatterCameraVideoStreamOptions;
+    namespace Collections = winrt::Windows::Foundation::Collections;
+    auto options = winrt::make<Options>();
+    auto request = winrt::get_self<Options>(options)->Snapshot();
+    Require(options.MinimumWidth() == 640 && options.MaximumHeight() == 480 &&
+            options.MinimumFrameRate() == 30 && options.MaximumBitRate() == 2000000 &&
+            options.KeyFrameInterval() == 1000, "Allocation defaults changed");
+    options.MinimumWidth(0);
+    bool rejected = false;
+    try { winrt::get_self<Options>(options)->Snapshot(); }
+    catch (winrt::hresult_invalid_argument const &) { rejected = true; }
+    Require(rejected, "Zero-sized allocation was accepted");
+    options.MinimumWidth(641);
+    rejected = false;
+    try { winrt::get_self<Options>(options)->Snapshot(); }
+    catch (winrt::hresult_invalid_argument const &) { rejected = true; }
+    Require(rejected, "Reversed allocation bounds were accepted");
+    options.MinimumWidth(640);
+    options.MaximumWidth(1280);
+    Require(request.maxResolution.width == 640, "Mutable options changed a dispatched snapshot");
+    Collections::PropertySet fields, resolution;
+    resolution.Insert(L"0", winrt::box_value(uint64_t(640)));
+    resolution.Insert(L"1", winrt::box_value(uint64_t(480)));
+    for (auto [key, value] : std::initializer_list<std::pair<wchar_t const *, uint64_t>>{
+        { L"0", 7 }, { L"1", uint64_t(chip::app::Clusters::Globals::StreamUsageEnum::kLiveView) },
+        { L"2", uint64_t(chip::app::Clusters::CameraAvStreamManagement::VideoCodecEnum::kH264) },
+        { L"3", 30 }, { L"4", 30 }, { L"7", 500000 }, { L"8", 2000000 }, { L"9", 1000 }, { L"12", 1 } })
+    {
+        fields.Insert(key, winrt::box_value(value));
+    }
+    fields.Insert(L"5", resolution);
+    fields.Insert(L"6", resolution);
+    auto stream = winrt::make<Implementation::MatterCameraVideoStream>(fields);
+    Options::ValidateAllocated(request, stream);
+    auto success = winrt::make<Implementation::MatterCameraVideoStreamAllocationResult>(stream);
+    Require(success.Succeeded() && success.Stream().StreamId() == 7 && !success.Failure(), "Allocation result lost ownership");
+    auto failure = winrt::make<Implementation::MatterCameraFailure>(
+        Controller::MatterCameraStage::StreamAllocation, int32_t(E_ACCESSDENIED), false, uint32_t(0), L"Allocation denied");
+    auto denied = winrt::make<Implementation::MatterCameraVideoStreamAllocationResult>(failure);
+    Require(!denied.Succeeded() && !denied.Stream() && denied.Failure(), "Failed allocation supplied a stream");
+    for (auto [key, value] : std::initializer_list<std::pair<wchar_t const *, uint64_t>>{
+        { L"2", 255 }, { L"4", 60 }, { L"8", 3000000 }, { L"9", 2000 }, { L"12", 0 } })
+    {
+        auto previous = fields.Lookup(key);
+        fields.Insert(key, winrt::box_value(value));
+        rejected = false;
+        try { Options::ValidateAllocated(request, winrt::make<Implementation::MatterCameraVideoStream>(fields)); }
+        catch (winrt::hresult_error const &) { rejected = true; }
+        Require(rejected, "Mismatched allocated video metadata was accepted");
+        fields.Insert(key, previous);
+    }
+    for (int iteration = 0; iteration < 100; ++iteration)
+    {
+        std::atomic<int> releases = 0;
+        auto owner = std::make_shared<Implementation::PendingCameraVideoStream>([&](uint16_t id) {
+            Require(id == 7, "Cancellation released a guessed stream ID");
+            ++releases;
+        });
+        if (iteration % 2 == 0)
+        {
+            owner->Cancel();
+        }
+        owner->Record(7);
+        owner->Cancel();
+        owner->Release();
+        owner->Release();
+        Require(releases == 1, "Cancellation released an owned reference more than once");
+    }
+    int attempts = 0;
+    auto failedCleanup = std::make_shared<Implementation::PendingCameraVideoStream>([&](uint16_t) {
+        ++attempts;
+        throw winrt::hresult_error(E_ACCESSDENIED, L"Release denied");
+    });
+    failedCleanup->Record(7);
+    for (int call = 0; call < 2; ++call)
+    {
+        rejected = false;
+        try { failedCleanup->Release(); }
+        catch (winrt::hresult_error const & error) { rejected = error.code() == E_ACCESSDENIED; }
+        Require(rejected, "Cleanup failure became success");
+    }
+    Require(attempts == 1, "An uncertain deallocation was blindly repeated");
+    std::atomic<int> completedReleases = 0;
+    auto completedOwner = std::make_shared<Implementation::PendingCameraVideoStream>([&](uint16_t id) {
+        Require(id == 7, "Completed allocation released the wrong reference");
+        ++completedReleases;
+    });
+    auto completedCanceled = std::make_shared<std::atomic_bool>(false);
+    auto completed = CompleteAllocationForTest(stream, completedOwner, completedCanceled);
+    Require(completed.get().StreamId() == 7, "Completed allocation result was lost");
+    completed.Cancel();
+    Require(!completedCanceled->load() && completedReleases == 0, "Late cancellation reclaimed caller-owned allocation");
+    completedOwner->Release();
+    Require(completedReleases == 1, "The completed allocation's caller could not release its reference");
+    std::cout << "PASS allocation defaults, snapshots, metadata, typed results, 100 cancellation races and release failures\n";
+}
 
 #if CHIP_CONTROLLER_BUILD_WEBRTC_SIGNALING
 class HostedEvents : public chip::app::DataModel::EventsGenerator
@@ -508,6 +622,7 @@ int main()
         TestIceServers();
         TestCameraCapabilities();
         TestVideoStreamProjection();
+        TestVideoAllocationOwnership();
         TestStructuredCameraFailures();
 #if CHIP_CONTROLLER_BUILD_WEBRTC_SIGNALING
         TestHostedControllerComposition();

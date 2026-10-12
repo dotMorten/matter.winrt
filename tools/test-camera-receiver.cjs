@@ -8,12 +8,14 @@ const test = require("node:test");
 
 const source = fs.readFileSync(path.join(__dirname, "..", "samples", "ControllerApp", "Camera", "receiver.js"), "utf8");
 const token = "a".repeat(32);
+const dimensions = { minimumWidth: 640, maximumWidth: 640, minimumHeight: 480, maximumHeight: 480 };
 
 function receiver(earlyIce = false) {
     const messages = [];
     const peers = [];
     const timers = new Map();
-    const video = { srcObject: null, requestVideoFrameCallback(callback) { this.frame = callback; } };
+    const video = { srcObject: null, videoWidth: 640, videoHeight: 480,
+        requestVideoFrameCallback(callback) { this.frame = callback; } };
     const state = { textContent: "" };
     class Peer {
         constructor() { peers.push(this); this.candidates = []; }
@@ -32,7 +34,7 @@ function receiver(earlyIce = false) {
         async addIceCandidate(candidate) { this.candidates.push(candidate); }
         async getStats() {
             return new Map([
-                ["video", { type: "inbound-rtp", kind: "video", codecId: "codec" }],
+                ["video", { type: "inbound-rtp", kind: "video", codecId: "codec", framesDecoded: 1 }],
                 ["codec", { mimeType: "video/H264" }]
             ]);
         }
@@ -55,7 +57,7 @@ function receiver(earlyIce = false) {
     return {
         messages, peers, timers, video,
         send: message => context.receive(message),
-        start: () => context.receive({ type: "start", token, videoCodec: 0 }),
+        start: () => context.receive({ type: "start", token, videoCodec: 0, ...dimensions }),
         stop: () => context.receive({ type: "stop", token })
     };
 }
@@ -82,21 +84,21 @@ test("signaling alone never reports playback", async () => {
     const host = receiver();
     await host.start();
     await host.send({ type: "answer", token, sdp: "v=0\r\nanswer" });
-    host.peers[0].ontrack({ track: {} });
+    host.peers[0].ontrack({ track: { kind: "video" } });
     assert.equal(host.messages.some(message => message.type === "media"), false);
     await host.video.frame();
     assert.equal(host.messages.at(-1).state, "playing");
-    assert.equal(host.timers.size, 0);
+    assert.equal(host.timers.size, 1);
 });
 
 test("late decoded frames and ICE cannot leak into a newer receiver", async () => {
     const host = receiver();
     await host.start();
     const old = host.peers[0];
-    old.ontrack({ track: {} });
+    old.ontrack({ track: { kind: "video" } });
     const frame = host.video.frame;
     await host.stop();
-    await host.send({ type: "start", token: "b".repeat(32), videoCodec: 0 });
+    await host.send({ type: "start", token: "b".repeat(32), videoCodec: 0, ...dimensions });
     const count = host.messages.length;
     await frame();
     old.onicecandidate({ candidate: { candidate: "stale", sdpMid: "video", sdpMLineIndex: 0 } });
@@ -117,10 +119,10 @@ test("decoded video with a mismatched negotiated codec fails rather than claimin
     const host = receiver();
     await host.start();
     host.peers[0].getStats = async () => new Map([
-        ["video", { type: "inbound-rtp", kind: "video", codecId: "codec" }],
+        ["video", { type: "inbound-rtp", kind: "video", codecId: "codec", framesDecoded: 1 }],
         ["codec", { mimeType: "video/VP8" }]
     ]);
-    host.peers[0].ontrack({ track: {} });
+    host.peers[0].ontrack({ track: { kind: "video" } });
     await host.video.frame();
     assert.equal(host.messages.at(-1).type, "error");
     assert.equal(host.peers[0].closed, true);
@@ -133,6 +135,99 @@ test("no decoded frame has a bounded failure and closes the receiver", async () 
     [...host.timers.values()][0]();
     assert.equal(host.messages.at(-1).type, "error");
     assert.equal(host.peers[0].closed, true);
+});
+
+test("allocation dimensions are required and ordered before creating a peer", async () => {
+    for (const invalid of [
+        { minimumWidth: 0 }, { maximumWidth: 65536 }, { minimumHeight: null },
+        { maximumHeight: 479 }, { minimumWidth: 641 }
+    ]) {
+        const host = receiver();
+        await assert.rejects(host.send({ type: "start", token, videoCodec: 0, ...dimensions, ...invalid }));
+        assert.equal(host.peers.length, 0);
+    }
+});
+
+test("decoded dimensions outside the allocation fail without reporting playback", async () => {
+    for (const width of [0, 639, 641]) {
+        const host = receiver();
+        await host.start();
+        host.video.videoWidth = width;
+        host.peers[0].ontrack({ track: { kind: "video" } });
+        await host.video.frame();
+        assert.equal(host.messages.at(-1).type, "error");
+        assert.equal(host.peers[0].closed, true);
+        assert.equal(host.messages.some(message => message.type === "media"), false);
+    }
+});
+
+test("stats lag behind a presented frame without falsely claiming playback", async () => {
+    const host = receiver();
+    await host.start();
+    const stats = host.peers[0].getStats;
+    host.peers[0].getStats = async () => new Map();
+    host.peers[0].ontrack({ track: { kind: "video" } });
+    await host.video.frame();
+    assert.equal(host.messages.some(message => message.type === "media"), false);
+    assert.notEqual(host.peers[0].closed, true);
+    host.peers[0].getStats = stats;
+    await host.video.frame();
+    assert.equal(host.messages.at(-1).state, "playing");
+});
+
+test("repeated presented callbacks do not conceal a stalled decoder", async () => {
+    const host = receiver();
+    await host.start();
+    host.peers[0].ontrack({ track: { kind: "video" } });
+    await host.video.frame();
+    const deadline = [...host.timers.values()][0];
+    await host.video.frame();
+    assert.equal([...host.timers.values()][0], deadline);
+    deadline();
+    assert.equal(host.messages.at(-1).type, "error");
+    assert.equal(host.peers[0].closed, true);
+});
+
+test("new decoded frames renew the watchdog without duplicate playback events", async () => {
+    const host = receiver();
+    await host.start();
+    host.peers[0].ontrack({ track: { kind: "video" } });
+    await host.video.frame();
+    const deadline = [...host.timers.values()][0];
+    host.peers[0].getStats = async () => new Map([
+        ["video", { type: "inbound-rtp", kind: "video", codecId: "codec", framesDecoded: 2 }],
+        ["codec", { mimeType: "video/H264" }]
+    ]);
+    await host.video.frame();
+    assert.notEqual([...host.timers.values()][0], deadline);
+    assert.equal(host.messages.filter(message => message.type === "media").length, 1);
+    await host.stop();
+    deadline();
+    assert.equal(host.timers.size, 0);
+    assert.equal(host.messages.at(-1).state, "playing");
+});
+
+test("unexpected audio tracks close the video-only receiver", async () => {
+    const host = receiver();
+    await host.start();
+    host.peers[0].ontrack({ track: { kind: "audio" } });
+    assert.equal(host.messages.at(-1).type, "error");
+    assert.equal(host.peers[0].closed, true);
+});
+
+test("a replacement RTP stream's decoded counter renews the watchdog", async () => {
+    const host = receiver();
+    await host.start();
+    host.peers[0].ontrack({ track: { kind: "video" } });
+    await host.video.frame();
+    const deadline = [...host.timers.values()][0];
+    host.peers[0].getStats = async () => new Map([
+        ["replacement", { type: "inbound-rtp", kind: "video", codecId: "codec", framesDecoded: 1 }],
+        ["codec", { mimeType: "video/H264" }]
+    ]);
+    await host.video.frame();
+    assert.notEqual([...host.timers.values()][0], deadline);
+    assert.notEqual(host.peers[0].closed, true);
 });
 
 test("oversized SDP, ICE, MID, reserved index, and stale token are rejected", async () => {

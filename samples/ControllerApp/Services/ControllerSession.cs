@@ -188,6 +188,9 @@ public sealed class ControllerSession
                 return;
             }
 
+#if MATTER_CAMERA_DEVELOPMENT
+            await MatterControllerApp.Camera.CameraReceiverWindow.CloseAllAsync();
+#endif
             Controller.CommissioningProgress -= OnCommissioningProgress;
             await Controller.CloseAsync();
             Controller = null;

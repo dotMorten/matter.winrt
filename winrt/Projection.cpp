@@ -1,4 +1,5 @@
 #include "ProjectionTypes.h"
+#include "CameraVideoStreamAllocation.h"
 
 #include <app-common/zap-generated/cluster-objects.h>
 #include <app/CommandSender.h>
@@ -1129,15 +1130,26 @@ class GenericInvokeState final : public app::CommandSender::Callback
 {
 public:
     GenericInvokeState(EndpointId endpoint, ClusterId cluster, CommandId command, std::vector<uint8_t> encoded,
-                       std::optional<uint16_t> timedInvokeTimeout) :
+                       std::optional<uint16_t> timedInvokeTimeout, std::optional<CommandId> responseCommand = std::nullopt,
+                       bool responseData = false) :
         mPath(endpoint, cluster, command, app::CommandPathFlags::kEndpointIdValid), mEncoded(std::move(encoded)),
-        mTimedInvokeTimeout(timedInvokeTimeout), onConnected(&HandleConnected, this),
+        mTimedInvokeTimeout(timedInvokeTimeout), mResponseCommand(responseCommand), mResponseData(responseData),
+        onConnected(&HandleConnected, this),
         onConnectionFailure(&HandleConnectionFailure, this)
     {}
 
-    void OnResponse(app::CommandSender *, app::ConcreteCommandPath const &, app::StatusIB const & status,
+    void OnResponse(app::CommandSender *, app::ConcreteCommandPath const & path, app::StatusIB const & status,
                     TLV::TLVReader * data) override
     {
+        if (mResponseCommand && (mResponseSeen || path.mEndpointId != mPath.mEndpointId ||
+                                path.mClusterId != mPath.mClusterId ||
+                                (status.IsSuccess() && (path.mCommandId != *mResponseCommand ||
+                                                       (mResponseData && data == nullptr)))))
+        {
+            result = CHIP_ERROR_INVALID_ARGUMENT;
+            return;
+        }
+        mResponseSeen = true;
         CHIP_ERROR error = status.ToChipError();
         if (error != CHIP_NO_ERROR)
         {
@@ -1167,6 +1179,10 @@ public:
     {
         {
             std::scoped_lock lock(mutex);
+            if (mResponseCommand && !mResponseSeen && result == CHIP_NO_ERROR)
+            {
+                result = CHIP_ERROR_TIMEOUT;
+            }
             complete = true;
         }
         condition.notify_all();
@@ -1255,6 +1271,9 @@ private:
     app::CommandPathParams mPath;
     std::vector<uint8_t> mEncoded;
     std::optional<uint16_t> mTimedInvokeTimeout;
+    std::optional<CommandId> mResponseCommand;
+    bool mResponseData = false;
+    bool mResponseSeen = false;
     Platform::UniquePtr<app::CommandSender> sender;
 };
 
@@ -1806,13 +1825,16 @@ public:
     Windows::Foundation::Collections::IPropertySet InvokeCommand(uint64_t nodeId, EndpointId endpointId, ClusterId clusterId,
                                                                   CommandId commandId,
                                                                   Windows::Foundation::Collections::IPropertySet const & arguments,
-                                                                  std::optional<uint16_t> timedInvokeTimeout = std::nullopt)
+                                                                  std::optional<uint16_t> timedInvokeTimeout = std::nullopt,
+                                                                  std::optional<CommandId> responseCommand = std::nullopt,
+                                                                  bool responseData = false)
     {
         std::vector<uint8_t> encoded;
         CheckChipError(EncodePropertySetRoot(arguments, encoded), L"Encode Matter command arguments");
         std::scoped_lock operationLock(mOperationMutex);
         EnsureOpen();
-        GenericInvokeState state(endpointId, clusterId, commandId, std::move(encoded), timedInvokeTimeout);
+        GenericInvokeState state(endpointId, clusterId, commandId, std::move(encoded), timedInvokeTimeout, responseCommand,
+                                 responseData);
         StartConnectedOperation(nodeId, state.onConnected, state.onConnectionFailure);
         std::unique_lock lock(state.mutex);
         if (!state.condition.wait_for(lock, InteractionWaitTimeout(timedInvokeTimeout), [&state]() { return state.complete; }))
@@ -3344,6 +3366,63 @@ Controller::MatterCameraCapabilities ReadCameraCapabilities(
     return winrt::make<implementation::MatterCameraCapabilities>(descriptor, std::move(stream), std::move(transport));
 }
 
+bool CameraPrivacyEnabled(std::shared_ptr<ControllerRuntime> const & runtime, uint64_t nodeId, uint16_t endpointId,
+    Windows::Foundation::Collections::IVectorView<uint32_t> const & attributes,
+    std::shared_ptr<std::atomic_bool> const & canceled,
+    std::chrono::steady_clock::time_point deadline)
+{
+    using namespace chip::app::Clusters::CameraAvStreamManagement;
+    for (auto attribute : { Attributes::HardPrivacyModeOn::Id, Attributes::SoftLivestreamPrivacyModeEnabled::Id })
+    {
+        if (std::find(attributes.begin(), attributes.end(), attribute) != attributes.end() &&
+            PropertySetScalar<bool>(runtime->ReadAttribute(nodeId, endpointId, Id,
+                                                           attribute, canceled, deadline), L"Camera privacy state"))
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+void ReadCameraPrivacy(std::shared_ptr<ControllerRuntime> const & runtime, uint64_t nodeId,
+    Controller::MatterCameraCapabilities const & capabilities, std::shared_ptr<std::atomic_bool> const & canceled,
+    std::chrono::steady_clock::time_point deadline)
+{
+    if (CameraPrivacyEnabled(runtime, nodeId, capabilities.Descriptor().EndpointId(),
+                             capabilities.StreamManagement().Attributes(), canceled, deadline))
+    {
+        throw hresult_error(E_ACCESSDENIED, L"Camera privacy mode prevents streaming.");
+    }
+}
+
+template <class Request>
+Windows::Foundation::Collections::IPropertySet CameraCommandArguments(Request const & request)
+{
+    uint8_t encoded[512];
+    TLV::TLVWriter writer;
+    writer.Init(encoded, sizeof(encoded));
+    CheckChipError(request.Encode(writer, TLV::AnonymousTag()), L"Encode typed camera command");
+    CheckChipError(writer.Finalize(), L"Finalize typed camera command");
+    TLV::TLVReader reader;
+    reader.Init(encoded, writer.GetLengthWritten());
+    CheckChipError(reader.Next(), L"Read typed camera command");
+    return DecodePropertySetRoot(reader);
+}
+
+void DeallocateCameraVideoStream(std::shared_ptr<ControllerRuntime> const & runtime, uint64_t nodeId,
+                                 uint16_t endpointId, uint16_t streamId)
+{
+    if (!IsOperationalNodeId(nodeId) || endpointId == kInvalidEndpointId || streamId == UINT16_MAX)
+    {
+        throw hresult_invalid_argument(L"A valid camera endpoint and owned video stream identifier are required.");
+    }
+    using namespace chip::app::Clusters::CameraAvStreamManagement;
+    Commands::VideoStreamDeallocate::Type request;
+    request.videoStreamID = streamId;
+    runtime->InvokeCommand(nodeId, endpointId, Id, request.GetCommandId(), CameraCommandArguments(request),
+                           std::nullopt, request.GetCommandId());
+}
+
 Windows::Foundation::Collections::IVectorView<Controller::MatterCameraVideoStream> ReadCameraVideoStreams(
     std::shared_ptr<ControllerRuntime> const & runtime, uint64_t nodeId, uint16_t endpointId,
     std::shared_ptr<std::atomic_bool> const & canceled, std::chrono::steady_clock::time_point deadline)
@@ -3369,6 +3448,47 @@ Windows::Foundation::Collections::IVectorView<Controller::MatterCameraVideoStrea
 }
 
 } // namespace
+
+MatterCameraVideoStreamOptions::MatterCameraVideoStreamOptions()
+{
+    mRequest.streamUsage = chip::app::Clusters::Globals::StreamUsageEnum::kLiveView;
+    mRequest.videoCodec = chip::app::Clusters::CameraAvStreamManagement::VideoCodecEnum::kH264;
+    mRequest.minResolution.width = mRequest.maxResolution.width = 640;
+    mRequest.minResolution.height = mRequest.maxResolution.height = 480;
+    mRequest.minFrameRate = mRequest.maxFrameRate = 30;
+    mRequest.minBitRate = 500000;
+    mRequest.maxBitRate = 2000000;
+    mRequest.keyFrameInterval = 1000;
+}
+
+chip::app::Clusters::CameraAvStreamManagement::Commands::VideoStreamAllocate::Type
+MatterCameraVideoStreamOptions::Snapshot() const
+{
+    if (mRequest.minResolution.width == 0 || mRequest.minResolution.height == 0 ||
+        mRequest.minFrameRate == 0 || mRequest.minBitRate == 0 || mRequest.keyFrameInterval == 0 ||
+        mRequest.minResolution.width > mRequest.maxResolution.width ||
+        mRequest.minResolution.height > mRequest.maxResolution.height ||
+        mRequest.minFrameRate > mRequest.maxFrameRate || mRequest.minBitRate > mRequest.maxBitRate)
+    {
+        throw hresult_invalid_argument(L"Video stream bounds must be nonzero and ordered.");
+    }
+    return mRequest;
+}
+
+void MatterCameraVideoStreamOptions::ValidateAllocated(
+    chip::app::Clusters::CameraAvStreamManagement::Commands::VideoStreamAllocate::Type const & request,
+    Controller::MatterCameraVideoStream const & stream)
+{
+    if (!stream || !stream.IsLiveView() || stream.VideoCodec() != static_cast<uint8_t>(request.videoCodec) ||
+        stream.ReferenceCount() == 0 || stream.MinimumWidth() < request.minResolution.width ||
+        stream.MinimumHeight() < request.minResolution.height || stream.MaximumWidth() > request.maxResolution.width ||
+        stream.MaximumHeight() > request.maxResolution.height || stream.MinimumFrameRate() < request.minFrameRate ||
+        stream.MaximumFrameRate() > request.maxFrameRate || stream.MinimumBitRate() < request.minBitRate ||
+        stream.MaximumBitRate() > request.maxBitRate || stream.KeyFrameInterval() != request.keyFrameInterval)
+    {
+        throw ChipOperationError(CHIP_IM_GLOBAL_STATUS(ConstraintError), L"Allocated video metadata does not match the request.");
+    }
+}
 
 MatterCameraVideoStream::MatterCameraVideoStream(Windows::Foundation::Collections::IPropertySet const & fields) :
     mStreamId(CameraStreamField<uint16_t>(fields, L"0")),
@@ -3725,6 +3845,98 @@ MatterControllerCamera::ReadAllocatedVideoStreamsAsync(uint64_t nodeId, uint16_t
 
 namespace {
 
+Controller::MatterCameraVideoStream AllocateCameraVideoStream(
+    std::shared_ptr<ControllerRuntime> const & runtime, uint64_t nodeId, uint16_t endpointId,
+    chip::app::Clusters::CameraAvStreamManagement::Commands::VideoStreamAllocate::Type const & request,
+    std::shared_ptr<std::atomic_bool> const & canceled, Controller::MatterCameraStage & stage,
+    std::shared_ptr<PendingCameraVideoStream> const & ownership)
+{
+    using namespace chip::app::Clusters::CameraAvStreamManagement;
+    stage = Controller::MatterCameraStage::Validation;
+    if (!IsOperationalNodeId(nodeId) || endpointId == kInvalidEndpointId)
+    {
+        throw hresult_invalid_argument(L"A valid operational node and camera endpoint are required.");
+    }
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(120);
+    stage = Controller::MatterCameraStage::Descriptor;
+    auto descriptor = ReadEndpointDescriptor(runtime, nodeId, endpointId, canceled, deadline);
+    stage = Controller::MatterCameraStage::Capabilities;
+    auto capabilities = ReadCameraCapabilities(runtime, nodeId, descriptor, canceled, deadline);
+    auto commands = capabilities.StreamManagement().AcceptedCommands();
+    auto responses = capabilities.StreamManagement().GeneratedCommands();
+    if (!capabilities.SupportsVideo() ||
+        std::find(commands.begin(), commands.end(), Commands::VideoStreamAllocate::Id) == commands.end() ||
+        std::find(commands.begin(), commands.end(), Commands::VideoStreamDeallocate::Id) == commands.end() ||
+        std::find(responses.begin(), responses.end(), Commands::VideoStreamAllocateResponse::Id) == responses.end())
+    {
+        throw hresult_not_implemented(L"The camera does not advertise video allocation, response and deallocation.");
+    }
+    stage = Controller::MatterCameraStage::Privacy;
+    ReadCameraPrivacy(runtime, nodeId, capabilities, canceled, deadline);
+    stage = Controller::MatterCameraStage::StreamSelection;
+    auto sensor = runtime->ReadAttribute(nodeId, endpointId, Id, Attributes::VideoSensorParams::Id, canceled, deadline);
+    auto viewport = runtime->ReadAttribute(nodeId, endpointId, Id, Attributes::MinViewportResolution::Id, canceled, deadline);
+    auto usages = DescriptorNumericList<uint8_t>(
+        runtime->ReadAttribute(nodeId, endpointId, Id, Attributes::SupportedStreamUsages::Id, canceled, deadline));
+    if (std::find(usages.begin(), usages.end(), static_cast<uint8_t>(request.streamUsage)) == usages.end())
+    {
+        throw hresult_not_implemented(L"The camera does not advertise LiveView stream usage.");
+    }
+    if (request.maxResolution.width > CameraStreamField<uint16_t>(sensor, L"0") ||
+        request.maxResolution.height > CameraStreamField<uint16_t>(sensor, L"1") ||
+        request.maxFrameRate > CameraStreamField<uint16_t>(sensor, L"2") ||
+        request.minResolution.width < CameraStreamField<uint16_t>(viewport, L"0") ||
+        request.minResolution.height < CameraStreamField<uint16_t>(viewport, L"1"))
+    {
+        throw hresult_invalid_argument(L"Requested video exceeds camera sensor or viewport bounds.");
+    }
+    if (canceled->load(std::memory_order_acquire))
+    {
+        throw hresult_canceled();
+    }
+    stage = Controller::MatterCameraStage::StreamAllocation;
+    // Do not cancel a dispatched allocation before recovering its owned reference.
+    auto response = runtime->InvokeCommand(nodeId, endpointId, Id, request.GetCommandId(), CameraCommandArguments(request),
+                                          std::nullopt, Commands::VideoStreamAllocateResponse::Id, true);
+    const auto streamId = CameraStreamField<uint16_t>(response, L"0");
+    if (streamId == UINT16_MAX)
+    {
+        throw hresult_error(E_BOUNDS, L"Allocation returned a reserved stream identifier; remote ownership is uncertain.");
+    }
+    ownership->Record(streamId);
+    try
+    {
+        if (canceled->load(std::memory_order_acquire))
+        {
+            throw hresult_canceled();
+        }
+        stage = Controller::MatterCameraStage::StreamSelection;
+        auto streams = ReadCameraVideoStreams(runtime, nodeId, endpointId, canceled, deadline);
+        for (auto const & stream : streams)
+        {
+            if (stream.StreamId() == streamId)
+            {
+                MatterCameraVideoStreamOptions::ValidateAllocated(request, stream);
+                if (canceled->load(std::memory_order_acquire))
+                {
+                    throw hresult_canceled();
+                }
+                return stream;
+            }
+        }
+        throw hresult_error(E_BOUNDS, L"The owned allocation is absent from the camera's allocated stream list.");
+    }
+    catch (...)
+    {
+        const auto failure = std::current_exception();
+        const auto failedStage = stage;
+        stage = Controller::MatterCameraStage::StreamDeallocation;
+        ownership->Release();
+        stage = failedStage;
+        std::rethrow_exception(failure);
+    }
+}
+
 Controller::MatterCameraSession StartPreparedCamera(
     std::shared_ptr<ControllerRuntime> const & runtime, uint64_t nodeId, uint16_t endpointId, uint16_t videoStreamId,
     std::string const & sdp, std::shared_ptr<std::atomic_bool> const & canceled, Controller::MatterCameraStage & stage,
@@ -3755,20 +3967,7 @@ Controller::MatterCameraSession StartPreparedCamera(
         throw hresult_not_implemented(L"The camera does not advertise video and the required client-offer commands.");
     }
     stage = Controller::MatterCameraStage::Privacy;
-    using namespace chip::app::Clusters::CameraAvStreamManagement;
-    auto attributes = capabilities.StreamManagement().Attributes();
-    const chip::AttributeId privacyAttributes[] = {
-        Attributes::HardPrivacyModeOn::Id, Attributes::SoftLivestreamPrivacyModeEnabled::Id
-    };
-    for (auto attribute : privacyAttributes)
-    {
-        if (std::find(attributes.begin(), attributes.end(), attribute) != attributes.end() &&
-            PropertySetScalar<bool>(runtime->ReadAttribute(nodeId, endpointId, Id, attribute, canceled, deadline),
-                                     L"Camera privacy state"))
-        {
-            throw hresult_error(E_ACCESSDENIED, L"Camera privacy mode prevents streaming.");
-        }
-    }
+    ReadCameraPrivacy(runtime, nodeId, capabilities, canceled, deadline);
     stage = Controller::MatterCameraStage::StreamSelection;
     auto streams = ReadCameraVideoStreams(runtime, nodeId, endpointId, canceled, deadline);
     bool selected = false;
@@ -3776,7 +3975,7 @@ Controller::MatterCameraSession StartPreparedCamera(
     {
         if (stream.StreamId() == videoStreamId)
         {
-            selected = stream.IsLiveView();
+            selected = stream.IsLiveView() && stream.ReferenceCount() != 0;
         }
     }
     if (!selected)
@@ -3863,6 +4062,115 @@ Controller::MatterCameraFailureCategory CameraFailureCategory(
 }
 
 } // namespace
+
+Windows::Foundation::IAsyncOperation<Controller::MatterCameraVideoStream>
+MatterControllerCamera::AllocateVideoStreamAsync(uint64_t nodeId, uint16_t endpointId,
+                                                Controller::MatterCameraVideoStreamOptions options)
+{
+    auto lifetime = get_strong();
+    if (!options)
+    {
+        throw hresult_invalid_argument(L"Video stream options cannot be null.");
+    }
+    auto request = get_self<implementation::MatterCameraVideoStreamOptions>(options)->Snapshot();
+    auto canceled = std::make_shared<std::atomic_bool>(false);
+    auto ownership = std::make_shared<PendingCameraVideoStream>([runtime = mRuntime, nodeId, endpointId](uint16_t stream) {
+        DeallocateCameraVideoStream(runtime, nodeId, endpointId, stream);
+    });
+    auto cancellation = co_await get_cancellation_token();
+    cancellation.callback([canceled, ownership] {
+        canceled->store(true, std::memory_order_release);
+        ownership->Cancel();
+    });
+    co_await resume_background();
+    auto stage = Controller::MatterCameraStage::Validation;
+    co_return AllocateCameraVideoStream(mRuntime, nodeId, endpointId, request, canceled, stage, ownership);
+}
+
+Windows::Foundation::IAsyncOperation<bool> MatterControllerCamera::IsPrivacyEnabledAsync(uint64_t nodeId, uint16_t endpointId)
+{
+    auto lifetime = get_strong();
+    if (!IsOperationalNodeId(nodeId) || endpointId == kInvalidEndpointId)
+    {
+        throw hresult_invalid_argument(L"A valid operational node and camera endpoint are required.");
+    }
+    auto canceled = std::make_shared<std::atomic_bool>(false);
+    auto cancellation = co_await get_cancellation_token();
+    cancellation.callback([canceled] { canceled->store(true, std::memory_order_release); });
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    co_await resume_background();
+    using namespace chip::app::Clusters::CameraAvStreamManagement;
+    auto attributes = DescriptorNumericList<uint32_t>(
+        mRuntime->ReadAttribute(nodeId, endpointId, Id, Attributes::AttributeList::Id, canceled, deadline));
+    co_return CameraPrivacyEnabled(mRuntime, nodeId, endpointId, single_threaded_vector(std::move(attributes)).GetView(),
+                                  canceled, deadline);
+}
+
+Windows::Foundation::IAsyncOperation<Controller::MatterCameraVideoStreamAllocationResult>
+MatterControllerCamera::TryAllocateVideoStreamAsync(uint64_t nodeId, uint16_t endpointId,
+                                                   Controller::MatterCameraVideoStreamOptions options)
+{
+    auto lifetime = get_strong();
+    auto stage = Controller::MatterCameraStage::Validation;
+    chip::app::Clusters::CameraAvStreamManagement::Commands::VideoStreamAllocate::Type request;
+    auto validation = RunCameraOperation(stage, [&] {
+        if (!options)
+        {
+            throw hresult_invalid_argument(L"Video stream options cannot be null.");
+        }
+        request = get_self<implementation::MatterCameraVideoStreamOptions>(options)->Snapshot();
+    });
+    if (!validation.Succeeded())
+    {
+        co_return winrt::make<implementation::MatterCameraVideoStreamAllocationResult>(validation.Failure());
+    }
+    auto canceled = std::make_shared<std::atomic_bool>(false);
+    auto ownership = std::make_shared<PendingCameraVideoStream>([runtime = mRuntime, nodeId, endpointId](uint16_t stream) {
+        DeallocateCameraVideoStream(runtime, nodeId, endpointId, stream);
+    });
+    auto cancellation = co_await get_cancellation_token();
+    cancellation.callback([canceled, ownership] {
+        canceled->store(true, std::memory_order_release);
+        ownership->Cancel();
+    });
+    co_await resume_background();
+    Controller::MatterCameraVideoStream stream{ nullptr };
+    Controller::MatterCameraVideoStreamAllocationResult allocation{ nullptr };
+    auto result = RunCameraOperation(stage, [&] {
+        stream = AllocateCameraVideoStream(mRuntime, nodeId, endpointId, request, canceled, stage, ownership);
+        try
+        {
+            allocation = winrt::make<implementation::MatterCameraVideoStreamAllocationResult>(stream);
+        }
+        catch (...)
+        {
+            const auto failedStage = stage;
+            stage = Controller::MatterCameraStage::StreamDeallocation;
+            ownership->Release();
+            stage = failedStage;
+            throw;
+        }
+    });
+    co_return result.Succeeded() ? allocation
+                               : winrt::make<implementation::MatterCameraVideoStreamAllocationResult>(result.Failure());
+}
+
+Windows::Foundation::IAsyncAction MatterControllerCamera::DeallocateVideoStreamAsync(
+    uint64_t nodeId, uint16_t endpointId, uint16_t videoStreamId)
+{
+    auto lifetime = get_strong();
+    co_await resume_background();
+    DeallocateCameraVideoStream(mRuntime, nodeId, endpointId, videoStreamId);
+}
+
+Windows::Foundation::IAsyncOperation<Controller::MatterCameraOperationResult>
+MatterControllerCamera::TryDeallocateVideoStreamAsync(uint64_t nodeId, uint16_t endpointId, uint16_t videoStreamId)
+{
+    auto lifetime = get_strong();
+    co_await resume_background();
+    auto stage = Controller::MatterCameraStage::StreamDeallocation;
+    co_return RunCameraOperation(stage, [&] { DeallocateCameraVideoStream(mRuntime, nodeId, endpointId, videoStreamId); });
+}
 
 MatterCameraFailure::MatterCameraFailure(Controller::MatterCameraStage stage, int32_t result, bool hasNativeError,
                                         uint32_t nativeError, hstring message) :
