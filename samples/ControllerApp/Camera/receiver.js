@@ -7,17 +7,30 @@ let pendingRemoteCandidates = [];
 let pendingLocalCandidates = [];
 let offerPublished = false;
 let mediaDeadline = null;
+let audioEngine = null;
+let captureIntent = 0;
+let captureSequence = 0;
 const video = document.getElementById("video");
 const state = document.getElementById("state");
+const audioState = document.getElementById("audio-state");
+const audioControls = document.getElementById("audio-controls");
+const talkButton = document.getElementById("talk");
+const input = document.getElementById("input");
 
 function publish(type, fields = {}) {
     window.chrome.webview.postMessage({ token, type, ...fields });
 }
 
 function closeReceiver() {
+    releaseCapture();
+    audioEngine?.close();
+    audioEngine = null;
     clearTimeout(mediaDeadline);
     mediaDeadline = null;
     if (peer) {
+        for (const receiver of peer.getReceivers?.() ?? []) {
+            receiver.track?.stop();
+        }
         peer.close();
     }
     peer = null;
@@ -37,6 +50,9 @@ async function receive(message) {
             throw new Error("Invalid receiver initialization.");
         }
         token = message.token;
+        if (message.talk === true && message.listen !== true) {
+            throw new Error("Talkback requires explicit listening.");
+        }
         const capabilities = RTCRtpReceiver.getCapabilities("video");
         if (!capabilities || capabilities.codecs.length === 0) {
             throw new Error("This receiver has no supported video codecs.");
@@ -60,6 +76,32 @@ async function receive(message) {
         }
         peer = new RTCPeerConnection({ iceServers: [], iceTransportPolicy: "all" });
         const ownedPeer = peer;
+        audioControls.hidden = message.listen !== true;
+        talkButton.hidden = message.talk !== true;
+        talkButton.disabled = true;
+        if (message.listen === true) {
+            audioEngine = new RealtimeAudio(document.getElementById("audio"), (audioStatus, error) => {
+                if (peer !== ownedPeer) {
+                    return;
+                }
+                if (audioStatus === "error") {
+                    publish("error", { message: error });
+                    closeReceiver();
+                    return;
+                }
+                audioState.textContent = `Audio: ${audioStatus}.`;
+                if (audioStatus === "capture-on") {
+                    talkButton.textContent = "MICROPHONE ACTIVE - release to stop";
+                } else if (audioStatus === "outgoing") {
+                    talkButton.textContent = "TRANSMITTING - release to stop";
+                } else if (["capture-off", "permission-denied", "permission-timeout", "capture-unavailable",
+                    "talk-unsupported", "capture-timeout"].includes(audioStatus)) {
+                    talkButton.textContent = "Hold to talk (microphone off)";
+                }
+                publish("audio", { state: audioStatus });
+            });
+            audioEngine.start(peer, message.audio, message.talk === true);
+        }
         let framesDecoded = new Map();
         let playing = false;
         mediaDeadline = setTimeout(() => {
@@ -89,9 +131,20 @@ async function receive(message) {
         };
         peer.ontrack = event => {
             if (peer !== ownedPeer) {
+                event.track.stop?.();
+                return;
+            }
+            if (event.track.kind === "audio" && audioEngine) {
+                try {
+                    void audioEngine.attach(event.track);
+                } catch {
+                    publish("error", { message: "Unexpected audio track or playback initialization failure." });
+                    closeReceiver();
+                }
                 return;
             }
             if (event.track.kind !== "video") {
+                event.track.stop?.();
                 publish("error", { message: "Unexpected non-video media track." });
                 closeReceiver();
                 return;
@@ -161,7 +214,11 @@ async function receive(message) {
             video.requestVideoFrameCallback(inspectFrame);
         };
         peer.onconnectionstatechange = () => {
+            if (peer === ownedPeer) {
+                talkButton.disabled = ownedPeer.connectionState !== "connected";
+            }
             if (peer === ownedPeer && (peer.connectionState === "failed" || peer.connectionState === "disconnected")) {
+                releaseCapture();
                 publish("media", { state: peer.connectionState });
             }
         };
@@ -170,10 +227,13 @@ async function receive(message) {
                 publish("error", { message: "Video decoding failed." });
             }
         };
-        const offer = await peer.createOffer();
-        await peer.setLocalDescription(offer);
-        if (!peer) {
-            throw new Error("Receiver closed during offer generation.");
+        const offer = await ownedPeer.createOffer();
+        if (peer !== ownedPeer) {
+            return;
+        }
+        await ownedPeer.setLocalDescription(offer);
+        if (peer !== ownedPeer) {
+            return;
         }
         publish("offer", { sdp: offer.sdp });
         offerPublished = true;
@@ -191,17 +251,40 @@ async function receive(message) {
         state.textContent = "Closed.";
         return;
     }
+    if (message.type === "capture-stop") {
+        releaseCapture();
+        return;
+    }
     if (!peer) {
         throw new Error("Receiver is not initialized.");
     }
-    if (message.type === "answer") {
+    const targetPeer = peer;
+    if (message.type === "capture-authorized") {
+        if (audioEngine && captureIntent !== 0 && captureIntent === message.press && !document.hidden) {
+            const ownedAudioEngine = audioEngine;
+            void ownedAudioEngine.startCapture(true, input.value).catch(() => {
+                if (audioEngine === ownedAudioEngine) {
+                    publish("error", { message: "Invalid local microphone request." });
+                    closeReceiver();
+                }
+            });
+        } else {
+            releaseCapture();
+        }
+    } else if (message.type === "answer") {
         if (typeof message.sdp !== "string" || new TextEncoder().encode(message.sdp).length > 16384) {
             throw new Error("Answer exceeds receiver bounds.");
         }
-        await peer.setRemoteDescription({ type: "answer", sdp: message.sdp });
+        await targetPeer.setRemoteDescription({ type: "answer", sdp: message.sdp });
+        if (peer !== targetPeer) {
+            return;
+        }
         remoteDescriptionSet = true;
         for (const candidate of pendingRemoteCandidates) {
-            await peer.addIceCandidate(candidate);
+            await targetPeer.addIceCandidate(candidate);
+            if (peer !== targetPeer) {
+                return;
+            }
         }
         pendingRemoteCandidates = [];
         state.textContent = "Signaling answer applied; waiting for media.";
@@ -220,7 +303,10 @@ async function receive(message) {
                 throw new Error("Invalid remote candidate.");
             }
             if (remoteDescriptionSet) {
-                await peer.addIceCandidate(candidate);
+                await targetPeer.addIceCandidate(candidate);
+                if (peer !== targetPeer) {
+                    return;
+                }
             } else {
                 if (pendingRemoteCandidates.length === 32) {
                     throw new Error("Remote candidate queue overflow.");
@@ -233,8 +319,82 @@ async function receive(message) {
     }
 }
 
+function releaseCapture() {
+    captureIntent = 0;
+    audioEngine?.stopCapture();
+    if (audioEngine && token) {
+        publish("capture-release");
+    }
+}
+
+talkButton.addEventListener("pointerdown", event => {
+    if (!event.isTrusted || event.button !== 0 || talkButton.disabled || !audioEngine?.talk || document.hidden) {
+        return;
+    }
+    event.preventDefault();
+    talkButton.setPointerCapture(event.pointerId);
+    captureIntent = ++captureSequence;
+    publish("capture-request", { press: captureIntent });
+});
+talkButton.addEventListener("keydown", event => {
+    if (event.isTrusted && !event.repeat && ["Space", "Enter"].includes(event.code) &&
+        !talkButton.disabled && audioEngine?.talk && !document.hidden) {
+        event.preventDefault();
+        captureIntent = ++captureSequence;
+        publish("capture-request", { press: captureIntent });
+    }
+});
+talkButton.addEventListener("keyup", event => {
+    if (["Space", "Enter"].includes(event.code)) {
+        releaseCapture();
+    }
+});
+for (const name of ["pointerup", "pointercancel", "lostpointercapture", "blur"]) {
+    talkButton.addEventListener(name, releaseCapture);
+}
+document.addEventListener("visibilitychange", () => {
+    if (document.hidden) {
+        releaseCapture();
+    }
+});
+window.addEventListener("blur", releaseCapture);
+document.getElementById("resume-audio").addEventListener("click", () => void audioEngine?.play());
+document.getElementById("local-mute").addEventListener("change", event => audioEngine?.mute(event.target.checked));
+document.getElementById("local-volume").addEventListener("input", event => audioEngine?.volume(Number(event.target.value)));
+input.addEventListener("change", releaseCapture);
+document.getElementById("devices").addEventListener("click", async () => {
+    if (!audioEngine) {
+        return;
+    }
+    try {
+        const devices = await audioEngine.inputs();
+        input.replaceChildren(new Option("Default microphone", ""));
+        devices.filter(device => device.deviceId).forEach((device, index) => {
+            input.add(new Option(device.label || `Microphone ${index + 1}`, device.deviceId));
+        });
+        const output = document.getElementById("output");
+        output.replaceChildren(new Option("Default output", ""));
+        (await navigator.mediaDevices.enumerateDevices()).filter(device => device.kind === "audiooutput" && device.deviceId)
+            .slice(0, 32).forEach((device, index) => output.add(new Option(device.label || `Output ${index + 1}`, device.deviceId)));
+    } catch {
+        audioState.textContent = "Local audio device enumeration unavailable.";
+    }
+});
+document.getElementById("output").addEventListener("change", async event => {
+    try {
+        await audioEngine?.selectOutput(event.target.value);
+    } catch {
+        audioState.textContent = "Local output selection unsupported or denied; the camera remains connected.";
+    }
+});
+
 let delivery = Promise.resolve();
 window.chrome.webview.addEventListener("message", event => {
+    // Stop/capture revocation must not wait behind an outstanding RTC operation.
+    if (event.data?.token === token && ["stop", "capture-stop"].includes(event.data.type)) {
+        void receive(event.data);
+        return;
+    }
     delivery = delivery.then(() => receive(event.data)).catch(() => {
         state.textContent = "Receiver failed.";
         publish("error", { message: "Receiver rejected signaling or could not establish media." });

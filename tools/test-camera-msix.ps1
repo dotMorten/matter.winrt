@@ -11,7 +11,7 @@ $package = (Resolve-Path $PackagePath).Path
 $component = (Resolve-Path $ComponentDll).Path
 $archive = [System.IO.Compression.ZipFile]::OpenRead($package)
 try {
-    foreach ($name in @("Matter.Windows.Controller.dll", "Camera/receiver.html", "Camera/receiver.js", "Camera/receiver.css")) {
+    foreach ($name in @("Matter.Windows.Controller.dll", "Camera/receiver.html", "Camera/receiver.js", "Camera/receiver.css", "Camera/realtime-audio.js")) {
         if (-not $archive.GetEntry($name)) {
             throw "Camera MSIX is missing $name."
         }
@@ -32,6 +32,9 @@ try {
         if ("Matter.Windows.Controller.$type" -notin $registered) {
             throw "Camera MSIX does not register $type for native WinRT activation."
         }
+    }
+    if (-not $manifest.SelectSingleNode("//*[local-name()='DeviceCapability'][@Name='microphone']")) {
+        throw "Camera MSIX does not declare microphone capability for explicit push-to-talk."
     }
     $nativeStream = $archive.GetEntry("Matter.Windows.Controller.dll").Open()
     $hash = [System.Security.Cryptography.SHA256]::Create()

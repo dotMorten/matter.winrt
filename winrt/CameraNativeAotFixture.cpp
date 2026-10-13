@@ -4,6 +4,7 @@
 #include <clusters/Descriptor/ClusterId.h>
 #include <clusters/WebRTCTransportProvider/ClusterId.h>
 #include <clusters/WebRTCTransportProvider/CommandIds.h>
+#include <clusters/WebRTCTransportRequestor/ClusterId.h>
 #include <lib/core/CHIPError.h>
 
 extern "C" __declspec(dllexport) int32_t __stdcall GetCameraAudioFixture(int32_t variant, void ** value) noexcept
@@ -31,7 +32,7 @@ extern "C" __declspec(dllexport) int32_t __stdcall GetCameraAudioFixture(int32_t
         {
             *value = winrt::detach_abi(stream);
         }
-        else if (variant == 1)
+        else if (variant == 1 || (variant >= 4 && variant <= 8))
         {
             fields.Clear();
             fields.Insert(L"0", winrt::box_value(uint64_t(2)));
@@ -46,6 +47,35 @@ extern "C" __declspec(dllexport) int32_t __stdcall GetCameraAudioFixture(int32_t
             caps->mMicrophoneMuted = winrt::box_value(false).as<winrt::Windows::Foundation::IReference<bool>>();
             caps->mMicrophoneVolume = winrt::box_value(uint8_t(20)).as<winrt::Windows::Foundation::IReference<uint8_t>>();
             caps->mBandwidth = 128000;
+            if (variant >= 4)
+            {
+                fields.Insert(L"2", winrt::single_threaded_vector<winrt::Windows::Foundation::IInspectable>({
+                    winrt::box_value(uint64_t(8000)), winrt::box_value(uint64_t(12000)), winrt::box_value(uint64_t(16000)),
+                    winrt::box_value(uint64_t(24000)), winrt::box_value(uint64_t(48000)) }));
+                caps->mMicrophone = winrt::make<Implementation::MatterCameraAudioFormatCapabilities>(fields);
+                auto descriptor = winrt::make<Implementation::MatterEndpointDescriptor>(
+                    uint16_t(2), std::vector<uint16_t>{},
+                    std::vector<uint32_t>{ Camera::Id, chip::app::Clusters::WebRTCTransportProvider::Id },
+                    std::vector<uint32_t>{ chip::app::Clusters::WebRTCTransportRequestor::Id },
+                    std::vector<Controller::MatterDeviceType>{
+                        winrt::make<Implementation::MatterDeviceType>(variant == 5 ? 0x0140 : 0x0142, uint16_t(1)) });
+                auto management = winrt::make<Implementation::MatterCameraClusterCapabilities>(
+                    Camera::Id, uint16_t(2), uint32_t(0x13),
+                    std::vector<uint32_t>{ 7, 8, 9, 14, 16 },
+                    std::vector<uint32_t>{ Camera::Commands::AudioStreamAllocate::Id, Camera::Commands::AudioStreamDeallocate::Id },
+                    std::vector<uint32_t>{ Camera::Commands::AudioStreamAllocateResponse::Id });
+                namespace Provider = chip::app::Clusters::WebRTCTransportProvider;
+                auto transport = winrt::make<Implementation::MatterCameraClusterCapabilities>(
+                    Provider::Id, uint16_t(variant == 6 ? 3 : 2), uint32_t(0), std::vector<uint32_t>{},
+                    std::vector<uint32_t>{ Provider::Commands::ProvideOffer::Id, Provider::Commands::ProvideICECandidates::Id,
+                        Provider::Commands::EndSession::Id },
+                    std::vector<uint32_t>{ Provider::Commands::ProvideOfferResponse::Id });
+                caps->mCamera = winrt::make<Implementation::MatterCameraCapabilities>(descriptor, management, transport);
+                caps->mSpeaker = caps->mMicrophone;
+                caps->mTalk = winrt::box_value(uint8_t(variant == 7 ? 1 : 2)).as<winrt::Windows::Foundation::IReference<uint8_t>>();
+                caps->mPrivacy = variant == 8;
+                caps->mBandwidth = 128000000;
+            }
             *value = winrt::detach_abi(Controller::MatterCameraAudioCapabilities(*caps));
         }
         else if (variant == 2)

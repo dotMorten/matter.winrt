@@ -80,7 +80,7 @@
   </ItemGroup>
 
   <ItemGroup Condition="'$(MatterCameraDevelopment)' == 'true'">
-    <Content Include="Camera\receiver.html;Camera\receiver.js;Camera\receiver.css">
+    <Content Include="Camera\receiver.html;Camera\receiver.js;Camera\receiver.css;Camera\realtime-audio.js">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
     </Content>

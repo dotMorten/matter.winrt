@@ -191,10 +191,12 @@ universal percentage; writing volume never unmutes. Privacy prevents unmuting.
 These controls are distinct from local output mute, local capture mute and
 microphone permission. They never change camera privacy.
 
-This stage adds protocol and ownership APIs only. The receiver remains
-video-only; receive-only playback, permission-gated talkback, media-engine
-profile negotiation and physical audibility acceptance are not implemented or
-claimed by this stage. The current normative specification is unavailable;
+The SDK adds protocol and ownership APIs, not a media engine. The opt-in sample
+now has a separate receive-only Opus renderer, capability/profile negotiation
+and explicit permission-gated full-duplex push-to-talk. Video-only remains the
+default; half-duplex and physical audibility acceptance are not claimed.
+See the sample README for controls, cleanup and hardware acceptance limitations.
+The current normative specification is unavailable;
 the revision gate is based on checked-in generated definitions/server behavior,
 not a certification claim.
 

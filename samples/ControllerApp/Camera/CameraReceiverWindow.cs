@@ -20,6 +20,10 @@ public sealed class CameraReceiverWindow : Window
     private readonly ComboBox stream = new() { Header = "Advertised allocated LiveView stream" };
     private readonly TextBlock status = new() { Text = "Discover camera endpoints before starting." };
     private readonly Button start = new() { Content = "Start receiver", IsEnabled = false };
+    private readonly ComboBox mode = new() { Header = "Explicit media mode", SelectedIndex = 0 };
+    private readonly TextBlock audioStatus = new() { Text = "Local microphone off.", TextWrapping = TextWrapping.Wrap };
+    private readonly CameraAudioProfiles audioProfiles = new();
+    private readonly List<string> audioAttempts = [];
     private readonly Channel<string> messages = Channel.CreateBounded<string>(new BoundedChannelOptions(32)
     {
         SingleReader = true,
@@ -32,6 +36,7 @@ public sealed class CameraReceiverWindow : Window
     private Task? privacyTask;
     private Task? startTask;
     private Task? allocationTask;
+    private Task? preparationTask;
     private Task? stopTask;
     private Task? closeTask;
     private ushort selectedEndpoint;
@@ -46,7 +51,24 @@ public sealed class CameraReceiverWindow : Window
     private ushort? ownedStream;
     private ushort ownedStreamEndpoint;
     private bool deallocationAttempted;
-    private bool ownershipUncertain;
+    private bool ownershipUncertain
+    {
+        get => CameraAllocationOwnership.IsNodeUncertain(controller, nodeId);
+        set
+        {
+            if (value)
+            {
+                CameraAllocationOwnership.MarkNodeUncertain(controller, nodeId);
+            }
+        }
+    }
+    private MatterCameraAudioStream? ownedAudio;
+    private bool audioReleaseAttempted;
+    private bool selectedListening;
+    private bool selectedTalk;
+    private bool microphoneArmed;
+    private bool activeWindow = true;
+    private CameraAudioProfiles.Profile? selectedAudioProfile;
 
     public CameraReceiverWindow(MatterController controller, ulong nodeId)
     {
@@ -66,10 +88,16 @@ public sealed class CameraReceiverWindow : Window
         controls.Children.Add(refreshStreams);
         controls.Children.Add(allocate);
         controls.Children.Add(stream);
+        mode.Items.Add("Video only (no audio)");
+        mode.Items.Add("Video and listening (receive only)");
+        mode.Items.Add("Video, listening and explicit push-to-talk (full duplex)");
+        mode.SelectedIndex = 0;
+        controls.Children.Add(mode);
         controls.Children.Add(start);
         controls.Children.Add(stop);
         controls.Children.Add(status);
-        root.Children.Add(controls);
+        controls.Children.Add(audioStatus);
+        root.Children.Add(new ScrollViewer { Content = controls, MaxHeight = 360 });
         Grid.SetRow(browser, 1);
         root.Children.Add(browser);
         Content = root;
@@ -103,6 +131,26 @@ public sealed class CameraReceiverWindow : Window
             }
         };
         start.Click += OnStart;
+        Activated += (_, activation) =>
+        {
+            activeWindow = activation.WindowActivationState != WindowActivationState.Deactivated;
+            if (!activeWindow)
+            {
+                microphoneArmed = false;
+                if (ready && sessionCancellation is not null)
+                {
+                    try
+                    {
+                        Send(new { type = "capture-stop", token });
+                    }
+                    catch (Exception error)
+                    {
+                        status.Text = $"Capture revocation bridge failed: {error.Message}";
+                        _ = StopAsync();
+                    }
+                }
+            }
+        };
         allocate.Click += async (_, _) =>
         {
             if (sessionCancellation is not null || allocationTask is not null || stopTask is not null ||
@@ -225,6 +273,11 @@ public sealed class CameraReceiverWindow : Window
     private async Task AllocateStreamAsync(ushort cameraEndpoint)
     {
         status.Text = "Checking camera capabilities and privacy, then allocating an owned H.264 stream.";
+        RequireCameraEndpoint(await new MatterControllerCamera(controller).ReadCapabilitiesAsync(nodeId, cameraEndpoint));
+        if (closing || stopTask is not null)
+        {
+            return;
+        }
         // A dispatched allocation must finish so Stop can recover and deallocate its returned ID.
         var result = await new MatterControllerCamera(controller).TryAllocateVideoStreamAsync(
             nodeId, cameraEndpoint, new MatterCameraVideoStreamOptions());
@@ -271,7 +324,17 @@ public sealed class CameraReceiverWindow : Window
             browser.CoreWebView2.Settings.IsStatusBarEnabled = false;
             browser.CoreWebView2.NavigationStarting += (_, navigation) => navigation.Cancel = navigation.Uri != ReceiverUri;
             browser.CoreWebView2.NewWindowRequested += (_, request) => request.Handled = true;
-            browser.CoreWebView2.PermissionRequested += (_, permission) => permission.State = CoreWebView2PermissionState.Deny;
+            browser.CoreWebView2.PermissionRequested += (_, permission) =>
+            {
+                bool trusted = Uri.TryCreate(permission.Uri, UriKind.Absolute, out var origin) &&
+                    origin.GetLeftPart(UriPartial.Authority) == "https://matter-camera.local" &&
+                    browser.CoreWebView2.Source == ReceiverUri;
+                permission.SavesInProfile = false;
+                permission.State = permission.PermissionKind == CoreWebView2PermissionKind.Microphone &&
+                    trusted && microphoneArmed && activeWindow && selectedTalk && session is not null &&
+                    sessionCancellation is not null && !closing
+                    ? CoreWebView2PermissionState.Default : CoreWebView2PermissionState.Deny;
+            };
             browser.CoreWebView2.DownloadStarting += (_, download) => download.Cancel = true;
             browser.CoreWebView2.WebMessageReceived += OnMessage;
             browser.CoreWebView2.NavigationCompleted += (_, navigation) =>
@@ -294,9 +357,9 @@ public sealed class CameraReceiverWindow : Window
         }
     }
 
-    private void OnStart(object sender, RoutedEventArgs args)
+    private async void OnStart(object sender, RoutedEventArgs args)
     {
-        if (!ready || closing || stopTask is not null || allocationTask is not null || ownershipUncertain ||
+        if (!ready || closing || stopTask is not null || allocationTask is not null || preparationTask is not null || ownershipUncertain ||
             sessionCancellation is not null ||
             !double.IsFinite(endpoint.Value) || endpoint.Value < 0 || endpoint.Value > 65534 ||
             endpoint.Value != Math.Truncate(endpoint.Value) || streamEndpoint != endpoint.Value ||
@@ -314,12 +377,97 @@ public sealed class CameraReceiverWindow : Window
         selectedEndpoint = checked((ushort)endpoint.Value);
         selectedStream = advertised.StreamId;
         selectedCodec = advertised.VideoCodec;
+        selectedListening = mode.SelectedIndex > 0;
+        selectedTalk = mode.SelectedIndex == 2;
+        selectedAudioProfile = null;
+        audioAttempts.Clear();
+        microphoneArmed = false;
         token = Guid.NewGuid().ToString("N");
         start.IsEnabled = false;
-        status.Text = "Generating a video-only offer. Microphone and recording are disabled.";
+        mode.IsEnabled = false;
+        var owner = sessionCancellation;
+        preparationTask = PrepareReceiverAsync(advertised, owner, token);
+        try
+        {
+            await preparationTask;
+        }
+        catch (OperationCanceledException) when (owner.IsCancellationRequested)
+        {
+            // Stop waits for any dispatched allocation and releases the recovered ID.
+        }
+        catch (Exception error)
+        {
+            audioProfiles.Invalidate();
+            status.Text = $"Receiver preparation failed: {error.Message}";
+            await StopAsync();
+        }
+        finally
+        {
+            preparationTask = null;
+        }
+    }
+
+    private async Task PrepareReceiverAsync(MatterCameraVideoStream advertised, CancellationTokenSource owner, string ownerToken)
+    {
+        RequireCameraEndpoint(await new MatterControllerCamera(controller).ReadCapabilitiesAsync(nodeId, selectedEndpoint)
+            .AsTask(owner.Token));
+        if (selectedListening)
+        {
+            var camera = new MatterControllerCamera(controller);
+            var capabilities = await camera.ReadAudioCapabilitiesAsync(nodeId, selectedEndpoint).AsTask(owner.Token);
+            var basic = await controller.GetBasicInformationCluster(nodeId, 0).ReadAsync().AsTask(owner.Token);
+            string script = await browser.ExecuteScriptAsync($"JSON.stringify(RealtimeAudio.formats({(selectedTalk ? "true" : "false")}))")
+                .AsTask().WaitAsync(TimeSpan.FromSeconds(5), owner.Token);
+            using var formats = JsonDocument.Parse(JsonSerializer.Deserialize<string>(script)
+                ?? throw new InvalidOperationException("Missing media-engine formats."));
+            var candidates = audioProfiles.Prepare(selectedEndpoint, basic.SoftwareVersion, capabilities,
+                formats.RootElement, selectedTalk, advertised.MaximumBitRate, DateTimeOffset.UtcNow);
+            for (int attempt = 0; attempt < candidates.Count; ++attempt)
+            {
+                owner.Token.ThrowIfCancellationRequested();
+                var candidate = candidates[attempt];
+                audioStatus.Text = $"Audio candidate {attempt + 1}/{candidates.Count}: advertised Opus mono, " +
+                    $"{candidate.SampleRate} Hz, 16 bit, {candidate.BitRate} bit/s. Microphone capture remains off.";
+                audioAttempts.Add($"{candidate.SampleRate} Hz, {candidate.BitRate} bit/s: " +
+                    (attempt == 0 ? "deterministic compatible/cached preference"
+                        : "alternative advertised format after correlated parameter refusal"));
+                var allocation = await camera.TryAllocateAudioStreamAsync(nodeId, selectedEndpoint, candidate.Options());
+                if (allocation.Succeeded)
+                {
+                    ownedAudio = allocation.Stream;
+                    audioReleaseAttempted = false;
+                    selectedAudioProfile = candidate;
+                    break;
+                }
+                audioProfiles.Invalidate();
+                audioAttempts.Add(DescribeFailure(allocation.Failure));
+                ownershipUncertain |= CameraAllocationOwnership.IsOutcomeUncertain(allocation.Failure);
+                if (!CameraAudioProfiles.CanTryAnother(allocation.Failure) || attempt + 1 == candidates.Count)
+                {
+                    throw new InvalidOperationException(DescribeFailure(allocation.Failure));
+                }
+                audioStatus.Text = $"Correlated refusal: {DescribeFailure(allocation.Failure)}. " +
+                    "Trying the next advertised, lower-rate Opus format.";
+            }
+            audioStatus.Text = $"Camera microphone muted: {capabilities.MicrophoneMuted}; " +
+                $"camera speaker muted: {capabilities.SpeakerMuted}. Local capture off; remote controls unchanged.";
+        }
+        owner.Token.ThrowIfCancellationRequested();
+        if (sessionCancellation != owner)
+        {
+            return;
+        }
+        status.Text = selectedListening ? "Generating explicit AV offer. Local microphone remains off."
+            : "Generating a video-only offer. Microphone and recording are disabled.";
         Send(new
         {
-            type = "start", token, videoCodec = selectedCodec,
+            type = "start", token = ownerToken, videoCodec = selectedCodec, listen = selectedListening, talk = selectedTalk,
+            audio = ownedAudio is null ? null : new
+            {
+                codec = ownedAudio.AudioCodec == 0 ? "audio/opus" : "unsupported",
+                channels = ownedAudio.Channels, sampleRate = ownedAudio.SampleRate,
+                bitRate = ownedAudio.BitRate, bitDepth = ownedAudio.BitDepth
+            },
             minimumWidth = advertised.MinimumWidth, maximumWidth = advertised.MaximumWidth,
             minimumHeight = advertised.MinimumHeight, maximumHeight = advertised.MaximumHeight
         });
@@ -394,9 +542,57 @@ public sealed class CameraReceiverWindow : Window
                     {
                         throw new InvalidOperationException("Unexpected media state.");
                     }
-                    if (state == "failed")
+                    if (state is "failed" or "disconnected")
                     {
+                        audioProfiles.Invalidate();
                         await StopAsync();
+                    }
+                    else if (type == "capture-request")
+                    {
+                        long press = message.GetProperty("press").GetInt64();
+                        if (!selectedTalk || !activeWindow || session is null || press < 1 || press > 9007199254740991)
+                        {
+                            throw new InvalidOperationException("Unexpected microphone authorization request.");
+                        }
+                        if (await new MatterControllerCamera(controller).IsPrivacyEnabledAsync(nodeId, selectedEndpoint)
+                            .AsTask(sessionCancellation.Token))
+                        {
+                            throw new InvalidOperationException("Camera privacy enabled; microphone capture is forbidden.");
+                        }
+                        if (sessionCancellation is null || !activeWindow)
+                        {
+                            continue;
+                        }
+                        microphoneArmed = true;
+                        Send(new { type = "capture-authorized", token, press });
+                    }
+                    else if (type == "capture-release")
+                    {
+                        microphoneArmed = false;
+                    }
+                    else if (type == "audio")
+                    {
+                        string? audioState = message.GetProperty("state").GetString();
+                        if (!selectedListening || audioState is not ("receiving" or "decoded" or "playing" or "playback-blocked" or
+                            "muted" or "unmuted" or "capture-on" or "capture-off" or "outgoing" or "permission-denied" or
+                            "permission-timeout" or "capture-timeout" or "capture-unavailable" or "talk-unsupported" or "capture-pending"))
+                        {
+                            throw new InvalidOperationException("Unexpected audio media state.");
+                        }
+                        if (audioState is "capture-on" or "outgoing" && (!selectedTalk || !microphoneArmed))
+                        {
+                            throw new InvalidOperationException("Unexpected local microphone capture.");
+                        }
+                        if (audioState is "capture-off" or "permission-denied" or "permission-timeout" or "capture-timeout" or
+                            "capture-unavailable" or "talk-unsupported" or "capture-pending")
+                        {
+                            microphoneArmed = false;
+                        }
+                        audioStatus.Text = $"Audio: {audioState}. Packets and playback progress do not prove physical audibility.";
+                        if (audioState == "playing" && selectedAudioProfile is not null)
+                        {
+                            audioProfiles.Remember(selectedAudioProfile, DateTimeOffset.UtcNow);
+                        }
                     }
                 }
                 else if (type == "error")
@@ -418,6 +614,7 @@ public sealed class CameraReceiverWindow : Window
             }
             catch (Exception error)
             {
+                audioProfiles.Invalidate();
                 status.Text = $"Camera stage failed: {error.Message}";
                 await StopAsync();
             }
@@ -426,10 +623,30 @@ public sealed class CameraReceiverWindow : Window
 
     private async Task StartSessionAsync(string sdp, CancellationTokenSource owner, string ownerToken)
     {
-        var result = await new MatterControllerCamera(controller).TryStartWithAllocatedVideoStreamAsync(
-            nodeId, selectedEndpoint, selectedStream, sdp).AsTask(owner.Token);
+        owner.Token.ThrowIfCancellationRequested();
+        MatterCameraStartResult result;
+        try
+        {
+            var camera = new MatterControllerCamera(controller);
+            result = selectedListening
+                ? await camera.TryStartSessionAsync(nodeId, selectedEndpoint,
+                    new MatterCameraStreamSelection(MatterCameraStreamSelectionKind.ExplicitId, selectedStream),
+                    new MatterCameraStreamSelection(MatterCameraStreamSelectionKind.ExplicitId,
+                        ownedAudio?.StreamId ?? throw new InvalidOperationException("Missing owned audio allocation.")),
+                    sdp, Array.Empty<MatterCameraIceServer>()).AsTask(owner.Token)
+                : await camera.TryStartWithAllocatedVideoStreamAsync(nodeId, selectedEndpoint, selectedStream, sdp).AsTask(owner.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            ownershipUncertain = true;
+            throw;
+        }
         if (!result.Succeeded)
         {
+            audioProfiles.Invalidate();
+            ownershipUncertain |= result.Failure.Category is MatterCameraFailureCategory.Timeout or
+                MatterCameraFailureCategory.ConnectionFailure or MatterCameraFailureCategory.MalformedData or
+                MatterCameraFailureCategory.Unknown;
             throw new InvalidOperationException(DescribeFailure(result.Failure));
         }
         var started = result.Session;
@@ -438,6 +655,7 @@ public sealed class CameraReceiverWindow : Window
             var cleanup = await started.TryCloseAsync();
             if (!cleanup.Succeeded)
             {
+                ownershipUncertain = true;
                 throw new InvalidOperationException(DescribeFailure(cleanup.Failure));
             }
             return;
@@ -450,9 +668,41 @@ public sealed class CameraReceiverWindow : Window
 
     private async Task MonitorPrivacyAsync(ushort cameraEndpoint, CancellationToken cancellation)
     {
+        List<AttributeSubscription> subscriptions = [];
         try
         {
             var camera = new MatterControllerCamera(controller);
+            var capabilities = await camera.ReadCapabilitiesAsync(nodeId, cameraEndpoint).AsTask(cancellation);
+            foreach (uint attribute in new uint[] { 20, 21 }.Where(capabilities.StreamManagement.Attributes.Contains))
+            {
+                cancellation.ThrowIfCancellationRequested();
+                // Recover subscriptions created after Stop before closing their native handles.
+                var subscription = await controller.SubscribeAttributeAsync(nodeId,
+                    new AttributePath(cameraEndpoint, 0x551, attribute), 0, 5);
+                subscriptions.Add(subscription);
+                subscription.ReportReceived += (_, report) =>
+                {
+                    if (cancellation.IsCancellationRequested)
+                    {
+                        return;
+                    }
+                    bool malformed = !report.Value.Data.TryGetValue("value", out var value) || value is not bool;
+                    if (malformed || value is true)
+                    {
+                        DispatcherQueue.TryEnqueue(async () =>
+                        {
+                            if (!cancellation.IsCancellationRequested)
+                            {
+                                microphoneArmed = false;
+                                audioProfiles.Invalidate();
+                                status.Text = malformed ? "Malformed privacy report; stopping media."
+                                    : "Privacy report enabled; stopping media and owned allocations.";
+                                await StopAsync();
+                            }
+                        });
+                    }
+                };
+            }
             while (!cancellation.IsCancellationRequested)
             {
                 if (await camera.IsPrivacyEnabledAsync(nodeId, cameraEndpoint).AsTask(cancellation))
@@ -473,6 +723,21 @@ public sealed class CameraReceiverWindow : Window
         {
             status.Text = $"Privacy monitoring failed: {error.Message}";
             DispatcherQueue.TryEnqueue(async () => await StopAsync());
+        }
+        finally
+        {
+            foreach (var subscription in subscriptions)
+            {
+                try
+                {
+                    await subscription.CloseAsync();
+                }
+                catch (Exception error)
+                {
+                    ownershipUncertain = true;
+                    status.Text = $"Privacy subscription cleanup failed: {error.Message}";
+                }
+            }
         }
     }
 
@@ -515,6 +780,7 @@ public sealed class CameraReceiverWindow : Window
                 }
                 else
                 {
+                    audioProfiles.Invalidate();
                     status.Text = signal.Kind == MatterCameraSignalKind.End ? $"Camera ended session: {signal.EndReason}."
                         : $"Native signaling failed: 0x{signal.NativeError:x}.";
                     DispatcherQueue.TryEnqueue(async () => await StopAsync());
@@ -548,10 +814,12 @@ public sealed class CameraReceiverWindow : Window
         await cleanup;
         stopTask = null;
         start.IsEnabled = ready && !closing && !ownershipUncertain;
+        mode.IsEnabled = !closing;
     }
 
     private async Task StopCoreAsync()
     {
+        microphoneArmed = false;
         var cancellation = sessionCancellation;
         sessionCancellation = null;
         cancellation?.Cancel();
@@ -559,6 +827,21 @@ public sealed class CameraReceiverWindow : Window
         {
             try
             {
+                if (preparationTask is not null)
+                {
+                    try
+                    {
+                        await preparationTask;
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        // A dispatched audio allocation completes before cancellation is observed.
+                    }
+                    catch (Exception error)
+                    {
+                        status.Text = $"Audio preparation failed during cleanup: {error.Message}";
+                    }
+                }
                 Send(new { type = "stop", token });
             }
             catch (Exception error)
@@ -621,16 +904,43 @@ public sealed class CameraReceiverWindow : Window
                 var result = await ownedSession.TryCloseAsync();
                 if (!result.Succeeded)
                 {
+                    ownershipUncertain = true;
                     status.Text = $"Local receiver stopped; remote cleanup failed: {DescribeFailure(result.Failure)}";
                 }
             }
         }
         catch (Exception error)
         {
+            ownershipUncertain = true;
             status.Text = $"Local receiver stopped; remote cleanup failed: {error.Message}";
         }
         finally
         {
+            if (ownedAudio is not null && !audioReleaseAttempted)
+            {
+                audioReleaseAttempted = true;
+                try
+                {
+                    var result = await new MatterControllerCamera(controller).TryDeallocateAudioStreamAsync(
+                        nodeId, selectedEndpoint, ownedAudio.StreamId);
+                    if (result.Succeeded)
+                    {
+                        ownedAudio = null;
+                    }
+                    else
+                    {
+                        ownershipUncertain = true;
+                        audioProfiles.Invalidate();
+                        audioStatus.Text = $"Owned audio release failed; no blind retry: {DescribeFailure(result.Failure)}";
+                    }
+                }
+                catch (Exception error)
+                {
+                    ownershipUncertain = true;
+                    audioProfiles.Invalidate();
+                    audioStatus.Text = $"Owned audio release outcome uncertain: {error.Message}";
+                }
+            }
             if (ownedStream is ushort streamId && !deallocationAttempted)
             {
                 deallocationAttempted = true;
@@ -664,6 +974,14 @@ public sealed class CameraReceiverWindow : Window
         $"{failure.Stage}: {failure.Category}, HRESULT 0x{failure.HResult:x8}" +
         (failure.HasNativeError ? $", Matter 0x{failure.NativeError:x8}" : "") +
         $", retryable: {failure.Retryable}. {failure.Message}";
+
+    private static void RequireCameraEndpoint(MatterCameraCapabilities capabilities)
+    {
+        if (!capabilities.Descriptor.DeviceTypes.Any(type => type.DeviceTypeId == 0x0142 && type.Revision is 1 or 2))
+        {
+            throw new NotSupportedException("This adapter requires a discovered Matter Camera device type, revision 1 or 2.");
+        }
+    }
 
     private void Send(object message) =>
         browser.CoreWebView2.PostWebMessageAsJson(JsonSerializer.Serialize(message));

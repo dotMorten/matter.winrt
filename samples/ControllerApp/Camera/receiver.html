@@ -9,6 +9,18 @@
 <body>
   <video id="video" autoplay muted playsinline></video>
   <p id="state">Receiver ready; signaling and playback are separate states.</p>
+  <audio id="audio" autoplay></audio>
+  <section id="audio-controls" hidden>
+    <p id="audio-state">Audio idle; microphone off.</p>
+    <button id="resume-audio">Resume local playback</button>
+    <label><input id="local-mute" type="checkbox">Mute local playback (not camera microphone)</label>
+    <label>Local volume <input id="local-volume" type="range" min="0" max="1" step="0.05" value="1"></label>
+    <button id="devices">Read local audio devices (no capture)</button>
+    <label>Input <select id="input"><option value="">Default microphone</option></select></label>
+    <label>Output <select id="output"><option value="">Default output</option></select></label>
+    <button id="talk" hidden disabled>Hold to talk (microphone off)</button>
+  </section>
+  <script src="realtime-audio.js"></script>
   <script src="receiver.js"></script>
 </body>
 </html>

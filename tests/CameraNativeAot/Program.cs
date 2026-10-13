@@ -65,6 +65,60 @@ internal static class Program
                 "NativeAOT typed audio allocation success/rejection");
         }
         var streamOptions = new MatterCameraVideoStreamOptions();
+        using (var engine = System.Text.Json.JsonDocument.Parse(
+            """{"codecs":["audio/opus"],"sampleRates":[48000,24000,16000],"bitDepths":[16],"maximumChannels":2}"""))
+        {
+            for (int variant = 4; variant <= 8; ++variant)
+            {
+                Marshal.ThrowExceptionForHR(GetCameraAudioFixture(variant, out audioPointer));
+                MatterCameraAudioCapabilities fixture;
+                try { fixture = WinRT.MarshalInspectable<MatterCameraAudioCapabilities>.FromAbi(audioPointer); }
+                finally { Marshal.Release(audioPointer); }
+                var profiles = new MatterControllerApp.Camera.CameraAudioProfiles();
+                var now = DateTimeOffset.UtcNow;
+                try
+                {
+                    var candidates = profiles.Prepare(2, 1, fixture, engine.RootElement, true, 2000000, now);
+                    Require(variant == 4 && candidates.Count == 3 && candidates[0].SampleRate == 48000 &&
+                        candidates[1].SampleRate == 24000 && candidates[2].SampleRate == 16000,
+                        "Profile intersection, three-attempt bound and camera/revision/duplex/privacy gate");
+                    profiles.Remember(candidates[2], now);
+                    Require(profiles.Prepare(2, 1, fixture, engine.RootElement, true, 2000000, now)[0].SampleRate == 16000,
+                        "Verified profile cache preference");
+                    Require(profiles.Prepare(2, 2, fixture, engine.RootElement, true, 2000000, now)[0].SampleRate == 48000,
+                        "Firmware changes invalidate profile cache");
+                    profiles.Remember(candidates[2], now);
+                    Require(profiles.Prepare(2, 2, fixture, engine.RootElement, true, 2000000, now.AddMinutes(6))[0].SampleRate == 48000,
+                        "Profile cache expiry");
+                    profiles.Remember(candidates[2], now);
+                    profiles.Invalidate();
+                    Require(profiles.Prepare(2, 2, fixture, engine.RootElement, true, 2000000, now)[0].SampleRate == 48000,
+                        "Explicit failure invalidates cached profile");
+                }
+                catch (NotSupportedException)
+                {
+                    Require(variant != 4, "Only unsupported profile paths reject");
+                    if (variant == 7)
+                    {
+                        Require(profiles.Prepare(2, 1, fixture, engine.RootElement, false, 2000000, now).Count == 3,
+                            "Half-duplex endpoints may listen without enabling unvalidated talkback");
+                    }
+                }
+            }
+            using var unknown = System.Text.Json.JsonDocument.Parse(
+                """{"codecs":["unknown"],"sampleRates":[48000],"bitDepths":[16],"maximumChannels":2}""");
+            Marshal.ThrowExceptionForHR(GetCameraAudioFixture(4, out audioPointer));
+            try { audioCapabilities = WinRT.MarshalInspectable<MatterCameraAudioCapabilities>.FromAbi(audioPointer); }
+            finally { Marshal.Release(audioPointer); }
+            bool rejected = false;
+            try
+            {
+                new MatterControllerApp.Camera.CameraAudioProfiles().Prepare(2, 1, audioCapabilities,
+                    unknown.RootElement, false, 2000000, DateTimeOffset.UtcNow);
+            }
+            catch (NotSupportedException) { rejected = true; }
+            Require(rejected, "Unknown engine codecs fail rather than being coerced");
+        }
         Require(streamOptions.MinimumWidth == 640 && streamOptions.MaximumWidth == 640 &&
             streamOptions.MinimumHeight == 480 && streamOptions.MaximumHeight == 480 &&
             streamOptions.MinimumFrameRate == 30 && streamOptions.MaximumFrameRate == 30 &&
@@ -104,6 +158,8 @@ internal static class Program
                 Require(MatterControllerApp.Camera.CameraAllocationOwnership.IsOutcomeUncertain(allocation.Failure) ==
                     (variant == 1 || variant >= 5),
                     "Receiver ownership lockout distinguishes refusal from timeout, malformed response, connection loss and failed release");
+                Require(MatterControllerApp.Camera.CameraAudioProfiles.CanTryAnother(allocation.Failure) ==
+                    (variant is 2 or 3), "Only correlated parameter refusals permit a bounded compatible candidate");
                 if (variant is >= 2 and <= 4)
                 {
                     Require(allocation.Failure.NativeError == rejectionCodes[variant - 2] && !allocation.Failure.Retryable,
@@ -321,6 +377,18 @@ internal static class Program
                     failed.Failure.Stage == MatterCameraStage.Validation &&
                     failed.Failure.Category == MatterCameraFailureCategory.InvalidInput &&
                     !failed.Failure.HasNativeError && !failed.Failure.Retryable, "Structured NativeAOT start failure");
+                Require(!MatterControllerApp.Camera.CameraAllocationOwnership.IsNodeUncertain(controller, 2),
+                    "New sample controller has no unknown ownership outcomes");
+                MatterControllerApp.Camera.CameraAllocationOwnership.MarkNodeUncertain(controller, 2);
+                Require(MatterControllerApp.Camera.CameraAllocationOwnership.IsNodeUncertain(controller, 2) &&
+                    !MatterControllerApp.Camera.CameraAllocationOwnership.IsNodeUncertain(controller, 3),
+                    "Unknown ownership survives receiver-window replacement without blocking unrelated nodes");
+                for (ulong uncertainNode = 100; uncertainNode < 164; ++uncertainNode)
+                {
+                    MatterControllerApp.Camera.CameraAllocationOwnership.MarkNodeUncertain(controller, uncertainNode);
+                }
+                Require(MatterControllerApp.Camera.CameraAllocationOwnership.IsNodeUncertain(controller, 3),
+                    "Bounded uncertainty ledger fails closed rather than dropping unresolved ownership");
                 await controller.CloseAsync();
                 await controller.CloseAsync();
                 Require(await retainedSession.GetStateAsync() == MatterCameraSessionState.Closed,

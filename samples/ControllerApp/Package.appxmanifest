@@ -135,5 +135,6 @@
     <DeviceCapability Name="bluetooth" />
     <DeviceCapability Name="pointOfService" />
     <DeviceCapability Name="webcam" />
+    <DeviceCapability Name="microphone" />
   </Capabilities>
 </Package>
