@@ -113,7 +113,7 @@ void TestVideoAllocationOwnership()
     for (auto [key, value] : std::initializer_list<std::pair<wchar_t const *, uint64_t>>{
         { L"0", 7 }, { L"1", uint64_t(chip::app::Clusters::Globals::StreamUsageEnum::kLiveView) },
         { L"2", uint64_t(chip::app::Clusters::CameraAvStreamManagement::VideoCodecEnum::kH264) },
-        { L"3", 30 }, { L"4", 30 }, { L"7", 500000 }, { L"8", 2000000 }, { L"9", 1000 }, { L"12", 1 } })
+        { L"3", 30 }, { L"4", 30 }, { L"7", 500000 }, { L"8", 2000000 }, { L"9", 1000 }, { L"12", 0 } })
     {
         fields.Insert(key, winrt::box_value(value));
     }
@@ -122,19 +122,20 @@ void TestVideoAllocationOwnership()
     auto stream = winrt::make<Implementation::MatterCameraVideoStream>(fields);
     Options::ValidateAllocated(request, stream);
     auto success = winrt::make<Implementation::MatterCameraVideoStreamAllocationResult>(stream);
-    Require(success.Succeeded() && success.Stream().StreamId() == 7 && !success.Failure(), "Allocation result lost ownership");
+    Require(success.Succeeded() && success.Stream().StreamId() == 7 && success.Stream().ReferenceCount() == 0 &&
+            !success.Failure(), "An unused allocated stream lost ownership");
     auto failure = winrt::make<Implementation::MatterCameraFailure>(
         Controller::MatterCameraStage::StreamAllocation, int32_t(E_ACCESSDENIED), false, uint32_t(0), L"Allocation denied");
     auto denied = winrt::make<Implementation::MatterCameraVideoStreamAllocationResult>(failure);
     Require(!denied.Succeeded() && !denied.Stream() && denied.Failure(), "Failed allocation supplied a stream");
     for (auto [key, value] : std::initializer_list<std::pair<wchar_t const *, uint64_t>>{
-        { L"2", 255 }, { L"4", 60 }, { L"8", 3000000 }, { L"9", 2000 }, { L"12", 0 } })
+        { L"2", 255 }, { L"4", 60 }, { L"8", 3000000 }, { L"9", 2000 } })
     {
         auto previous = fields.Lookup(key);
         fields.Insert(key, winrt::box_value(value));
         rejected = false;
         try { Options::ValidateAllocated(request, winrt::make<Implementation::MatterCameraVideoStream>(fields)); }
-        catch (winrt::hresult_error const &) { rejected = true; }
+        catch (winrt::hresult_error const & error) { rejected = error.code() == E_BOUNDS; }
         Require(rejected, "Mismatched allocated video metadata was accepted");
         fields.Insert(key, previous);
     }
@@ -588,6 +589,10 @@ void TestStructuredCameraFailures()
         { CHIP_ERROR_NOT_CONNECTED, Category::ConnectionFailure, true },
         { CHIP_ERROR_INCORRECT_STATE, Category::InvalidState, false },
         { CHIP_ERROR_INVALID_ARGUMENT, Category::MalformedData, false },
+        { CHIP_IM_GLOBAL_STATUS(DynamicConstraintError), Category::DynamicConstraintError, false },
+        { CHIP_IM_GLOBAL_STATUS(ConstraintError), Category::ConstraintError, false },
+        { CHIP_IM_GLOBAL_STATUS(InvalidCommand), Category::CommandRejected, false },
+        { CHIP_IM_GLOBAL_STATUS(Failure), Category::CommandRejected, false },
         { CHIP_ERROR_INTERNAL, Category::Unknown, false }
     };
     for (auto const & test : cases)

@@ -190,7 +190,7 @@
       <summary>Gets the advertised key-frame interval.</summary>
     </member>
     <member name="P:Matter.Windows.Controller.MatterCameraVideoStream.ReferenceCount">
-      <summary>Gets the advertised stream reference count without modifying ownership.</summary>
+      <summary>Gets the advertised transport-use reference count without modifying ownership. Zero is valid for a newly allocated, unused stream and does not prevent signaling start.</summary>
     </member>
     <member name="P:Matter.Windows.Controller.MatterCameraVideoStream.WatermarkEnabled">
       <summary>Gets watermark state, or null when the optional field is absent.</summary>
@@ -346,16 +346,16 @@
       <summary>Reads advertised software/hardware privacy with cancellation and a 30-second aggregate deadline. Returns true if either is enabled; missing attributes are not invented and read/type errors fail explicitly. This snapshot is not instantaneous enforcement.</summary>
     </member>
     <member name="M:Matter.Windows.Controller.MatterControllerCamera.AllocateVideoStreamAsync(System.UInt64,System.UInt16,Matter.Windows.Controller.MatterCameraVideoStreamOptions)">
-      <summary>Allocates an H.264 LiveView stream after capability, privacy, sensor and usage validation. Options are snapshotted before background work. Success transfers one reference; close signaling before deallocating it exactly once. Cancellation or validation failure releases a known returned reference; missing IDs or cleanup failure may leave ownership uncertain.</summary>
+      <summary>Allocates an H.264 LiveView stream after capability, privacy, sensor and usage validation. Options are snapshotted before background work. Success transfers cleanup responsibility for the returned ID, not a transport-reference-count increment. Close signaling before deallocating the owned stream exactly once. Cancellation or validation failure deallocates a known returned stream; missing IDs or cleanup failure may leave ownership uncertain.</summary>
     </member>
     <member name="M:Matter.Windows.Controller.MatterControllerCamera.TryAllocateVideoStreamAsync(System.UInt64,System.UInt16,Matter.Windows.Controller.MatterCameraVideoStreamOptions)">
-      <summary>Allocates with a typed stream-or-failure result and exact known native diagnostics. Success owns one allocation reference. Cancellation remains cancellation; never guess a missing ID or blindly retry uncertain reference-counted deallocation.</summary>
+      <summary>Allocates with a typed stream-or-failure result and exact known native diagnostics. Success owns cleanup of the returned stream; ReferenceCount zero is valid before transport use. Cancellation remains cancellation; never guess a missing ID or blindly retry uncertain deallocation.</summary>
     </member>
     <member name="M:Matter.Windows.Controller.MatterControllerCamera.DeallocateVideoStreamAsync(System.UInt64,System.UInt16,System.UInt16)">
-      <summary>Releases exactly one caller-owned allocation reference. Close its signaling session first. Bounded cleanup continues if the caller cancels its wait; an uncertain outcome must not be blindly retried.</summary>
+      <summary>Deallocates a caller-owned stream by its returned ID. Close its signaling session first; the device may refuse deallocation while transports still use the stream. Bounded cleanup continues if the caller cancels its wait; an uncertain outcome must not be blindly retried.</summary>
     </member>
     <member name="M:Matter.Windows.Controller.MatterControllerCamera.TryDeallocateVideoStreamAsync(System.UInt64,System.UInt16,System.UInt16)">
-      <summary>Releases one caller-owned reference with structured deallocation diagnostics. Cleanup continues after wait cancellation. Failure is not proof that a repeated reference-counted command is safe.</summary>
+      <summary>Deallocates a caller-owned stream with structured diagnostics. Cleanup continues after wait cancellation. Failure is not proof that repeating the command against a potentially reused stream ID is safe.</summary>
     </member>
     <member name="T:Matter.Windows.Controller.MatterCameraVideoStreamOptions">
       <summary>Configures nonzero, ordered H.264 LiveView allocation bounds. Defaults are exact 640x480, 30 fps, 500000-2000000 bits per second and a 1000 ms key-frame interval. Unsupported parameters are not silently relaxed.</summary>
@@ -391,22 +391,31 @@
       <summary>Gets or sets the nonzero key-frame interval in milliseconds; defaults to 1000.</summary>
     </member>
     <member name="T:Matter.Windows.Controller.MatterCameraVideoStreamAllocationResult">
-      <summary>Contains either an owned allocation reference with validated metadata or a structured failure. Metadata reads alone do not acquire references.</summary>
+      <summary>Contains either an owned stream ID with validated metadata or a structured failure. Metadata reads alone do not acquire cleanup ownership; a zero transport-reference count is valid.</summary>
     </member>
     <member name="P:Matter.Windows.Controller.MatterCameraVideoStreamAllocationResult.Succeeded">
-      <summary>Gets whether one allocation reference was successfully transferred to the caller.</summary>
+      <summary>Gets whether cleanup responsibility for the returned stream ID was successfully transferred to the caller.</summary>
     </member>
     <member name="P:Matter.Windows.Controller.MatterCameraVideoStreamAllocationResult.Stream">
-      <summary>Gets validated stream metadata, or null on failure. The caller must release its one allocation reference exactly once after signaling closes.</summary>
+      <summary>Gets validated stream metadata, or null on failure. The caller must deallocate the owned stream after signaling closes. ReferenceCount measures transport use, not caller-specific allocation ownership.</summary>
     </member>
     <member name="P:Matter.Windows.Controller.MatterCameraVideoStreamAllocationResult.Failure">
       <summary>Gets the structured failure, or null on success.</summary>
     </member>
     <member name="F:Matter.Windows.Controller.MatterCameraStage.StreamAllocation">
-      <summary>Allocating and recovering the camera's returned stream reference.</summary>
+      <summary>Allocating and recovering the camera's returned stream ID.</summary>
     </member>
     <member name="F:Matter.Windows.Controller.MatterCameraStage.StreamDeallocation">
-      <summary>Releasing exactly one owned stream reference, including rollback cleanup.</summary>
+      <summary>Deallocating the owned stream by its exact returned ID, including rollback cleanup.</summary>
+    </member>
+    <member name="F:Matter.Windows.Controller.MatterCameraFailureCategory.DynamicConstraintError">
+      <summary>The peer explicitly refused the command with the IM DynamicConstraintError status. This does not establish resource contention or media failure. The native code is preserved and no automatic retry is recommended.</summary>
+    </member>
+    <member name="F:Matter.Windows.Controller.MatterCameraFailureCategory.ConstraintError">
+      <summary>The peer explicitly refused the command with the IM ConstraintError status. This is distinct from malformed response metadata; the exact native status is preserved.</summary>
+    </member>
+    <member name="F:Matter.Windows.Controller.MatterCameraFailureCategory.CommandRejected">
+      <summary>An explicit IM refusal not represented by a more specific category. Inspect the preserved native status. Rejected allocation does not imply unknown ownership; failed deallocation remains an uncertain release.</summary>
     </member>
     <member name="T:Matter.Windows.Controller.MatterCameraDiscoveryResult">
       <summary>Contains a successful typed camera collection or a structured discovery failure. An empty collection is not a failure.</summary>

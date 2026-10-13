@@ -82,7 +82,7 @@ direct development outputs:
 ```powershell
 dotnet build .\samples\ControllerApp\MatterControllerApp.csproj `
     -p:Platform=x64 -p:Unpackaged=true `
-    -p:MatterControllerPackageVersion=0.2.0-camera.15 -p:MatterCameraDevelopment=true
+    -p:MatterControllerPackageVersion=0.2.0-camera.17 -p:MatterCameraDevelopment=true
 ```
 
 The package version property defaults to the existing published preview, and
@@ -112,14 +112,23 @@ The receiver reads advertised cluster revisions, features, and command lists
 before offering a stream selection, and refuses incomplete video/client-offer
 capabilities. The SDK refreshes these checks again at start.
 Stop, window close, and controller shutdown finish a pending sample allocation,
-end the signaling session, and release the sample-owned reference exactly once.
+end the signaling session, and deallocate the sample-owned stream exactly once.
 Externally allocated streams are never deallocated by the sample: stop the
-receiver before releasing your reference. An uncertain allocation/release
+receiver before deallocating your owned stream. An uncertain allocation/release
 disables further starts in that window; it never guesses IDs or blindly repeats
-reference-counted deallocation.
+deallocation of a potentially reused stream ID.
 Proven local encoding failures report Validation and do not disable further
 allocation as an uncertain remote outcome. Unknown outcomes after dispatch
 retain the ownership safeguards above; the sample does not automatically retry.
+Explicit camera refusals such as DynamicConstraintError preserve their category
+and native IM status without imposing the uncertain-allocation lockout. A
+rejection transfers no owned stream; the sample does not deallocate one.
+The stream's `ReferenceCount` measures active transport use. Zero is valid for
+an unused allocation and does not prevent Start; it never establishes ownership
+of a stream obtained only through metadata reads. SDK callers may configure the
+reported G350 allocation profile (1920x1080, 30-120 fps, fixed 10000-bit/s bitrate,
+4000-ms key-frame interval) through `MatterCameraVideoStreamOptions`; the sample's
+default button does not silently switch to this profile or retry.
 
 The WebView2 page is mapped only to `https://matter-camera.local/receiver.html`.
 This sample intentionally uses no ICE servers. The SDK's typed ICE-server input

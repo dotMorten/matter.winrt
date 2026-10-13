@@ -3458,6 +3458,20 @@ Windows::Foundation::Collections::IVectorView<Controller::MatterCameraVideoStrea
     return single_threaded_vector(std::move(streams)).GetView();
 }
 
+Controller::MatterCameraVideoStream FindAllocatedLiveViewStream(
+    Windows::Foundation::Collections::IVectorView<Controller::MatterCameraVideoStream> const & streams, uint16_t streamId)
+{
+    for (auto const & stream : streams)
+    {
+        // ReferenceCount measures transport use, not whether this stream is allocated.
+        if (stream.StreamId() == streamId && stream.IsLiveView())
+        {
+            return stream;
+        }
+    }
+    return nullptr;
+}
+
 } // namespace
 
 MatterCameraVideoStreamOptions::MatterCameraVideoStreamOptions()
@@ -3491,13 +3505,13 @@ void MatterCameraVideoStreamOptions::ValidateAllocated(
     Controller::MatterCameraVideoStream const & stream)
 {
     if (!stream || !stream.IsLiveView() || stream.VideoCodec() != static_cast<uint8_t>(request.videoCodec) ||
-        stream.ReferenceCount() == 0 || stream.MinimumWidth() < request.minResolution.width ||
+        stream.MinimumWidth() < request.minResolution.width ||
         stream.MinimumHeight() < request.minResolution.height || stream.MaximumWidth() > request.maxResolution.width ||
         stream.MaximumHeight() > request.maxResolution.height || stream.MinimumFrameRate() < request.minFrameRate ||
         stream.MaximumFrameRate() > request.maxFrameRate || stream.MinimumBitRate() < request.minBitRate ||
         stream.MaximumBitRate() > request.maxBitRate || stream.KeyFrameInterval() != request.keyFrameInterval)
     {
-        throw ChipOperationError(CHIP_IM_GLOBAL_STATUS(ConstraintError), L"Allocated video metadata does not match the request.");
+        throw hresult_error(E_BOUNDS, L"Allocated video metadata does not match the request.");
     }
 }
 
@@ -3923,19 +3937,17 @@ Controller::MatterCameraVideoStream AllocateCameraVideoStream(
         }
         stage = Controller::MatterCameraStage::StreamSelection;
         auto streams = ReadCameraVideoStreams(runtime, nodeId, endpointId, canceled, deadline);
-        for (auto const & stream : streams)
+        auto stream = FindAllocatedLiveViewStream(streams, streamId);
+        if (!stream)
         {
-            if (stream.StreamId() == streamId)
-            {
-                MatterCameraVideoStreamOptions::ValidateAllocated(request, stream);
-                if (canceled->load(std::memory_order_acquire))
-                {
-                    throw hresult_canceled();
-                }
-                return stream;
-            }
+            throw hresult_error(E_BOUNDS, L"The owned allocation is absent from the camera's allocated LiveView stream list.");
         }
-        throw hresult_error(E_BOUNDS, L"The owned allocation is absent from the camera's allocated stream list.");
+        MatterCameraVideoStreamOptions::ValidateAllocated(request, stream);
+        if (canceled->load(std::memory_order_acquire))
+        {
+            throw hresult_canceled();
+        }
+        return stream;
     }
     catch (...)
     {
@@ -3981,15 +3993,7 @@ Controller::MatterCameraSession StartPreparedCamera(
     ReadCameraPrivacy(runtime, nodeId, capabilities, canceled, deadline);
     stage = Controller::MatterCameraStage::StreamSelection;
     auto streams = ReadCameraVideoStreams(runtime, nodeId, endpointId, canceled, deadline);
-    bool selected = false;
-    for (auto const & stream : streams)
-    {
-        if (stream.StreamId() == videoStreamId)
-        {
-            selected = stream.IsLiveView() && stream.ReferenceCount() != 0;
-        }
-    }
-    if (!selected)
+    if (!FindAllocatedLiveViewStream(streams, videoStreamId))
     {
         throw hresult_error(E_INVALIDARG, L"The selected video stream is not an allocated LiveView stream.");
     }
@@ -4003,6 +4007,14 @@ Controller::MatterCameraFailureCategory CameraFailureCategory(
     using Category = Controller::MatterCameraFailureCategory;
     if (hasNativeError)
     {
+        if (nativeError == CHIP_IM_GLOBAL_STATUS(DynamicConstraintError).AsInteger())
+        {
+            return Category::DynamicConstraintError;
+        }
+        if (nativeError == CHIP_IM_GLOBAL_STATUS(ConstraintError).AsInteger())
+        {
+            return Category::ConstraintError;
+        }
         if (nativeError == CHIP_ERROR_TIMEOUT.AsInteger())
         {
             return Category::Timeout;
@@ -4034,10 +4046,13 @@ Controller::MatterCameraFailureCategory CameraFailureCategory(
         {
             return Category::InvalidState;
         }
-        if (nativeError == CHIP_ERROR_INVALID_ARGUMENT.AsInteger() ||
-            nativeError == CHIP_IM_GLOBAL_STATUS(ConstraintError).AsInteger())
+        if (nativeError == CHIP_ERROR_INVALID_ARGUMENT.AsInteger())
         {
             return stage == Controller::MatterCameraStage::Validation ? Category::InvalidInput : Category::MalformedData;
+        }
+        if (CHIP_ERROR(nativeError).IsIMStatus())
+        {
+            return Category::CommandRejected;
         }
         return Category::Unknown;
     }

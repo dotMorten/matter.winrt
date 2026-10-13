@@ -225,16 +225,12 @@ public sealed class CameraReceiverWindow : Window
     private async Task AllocateStreamAsync(ushort cameraEndpoint)
     {
         status.Text = "Checking camera capabilities and privacy, then allocating an owned H.264 stream.";
-        // A dispatched allocation must finish so Stop can recover and release its reference.
+        // A dispatched allocation must finish so Stop can recover and deallocate its returned ID.
         var result = await new MatterControllerCamera(controller).TryAllocateVideoStreamAsync(
             nodeId, cameraEndpoint, new MatterCameraVideoStreamOptions());
         if (!result.Succeeded)
         {
-            ownershipUncertain = result.Failure.Stage == MatterCameraStage.StreamDeallocation ||
-                (result.Failure.Stage == MatterCameraStage.StreamAllocation &&
-                 result.Failure.Category is MatterCameraFailureCategory.Timeout or
-                    MatterCameraFailureCategory.ConnectionFailure or MatterCameraFailureCategory.MalformedData or
-                    MatterCameraFailureCategory.Unknown);
+            ownershipUncertain = CameraAllocationOwnership.IsOutcomeUncertain(result.Failure);
             throw new InvalidOperationException(DescribeFailure(result.Failure));
         }
         var allocated = result.Stream;
@@ -254,7 +250,7 @@ public sealed class CameraReceiverWindow : Window
         });
         stream.SelectedIndex = 0;
         streamEndpoint = cameraEndpoint;
-        status.Text = "Owned stream allocated. Start the receiver; Stop ends the session and releases this reference.";
+        status.Text = "Owned stream allocated. Start the receiver; Stop ends the session and deallocates this stream.";
     }
 
     private async void OnLoaded(object sender, RoutedEventArgs args)
@@ -651,7 +647,7 @@ public sealed class CameraReceiverWindow : Window
                     else
                     {
                         ownershipUncertain = true;
-                        status.Text = $"Owned stream release failed; do not blindly retry: {DescribeFailure(result.Failure)}";
+                        status.Text = $"Owned stream deallocation failed; do not blindly retry: {DescribeFailure(result.Failure)}";
                     }
                 }
                 catch (Exception error)

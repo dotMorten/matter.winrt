@@ -30,7 +30,15 @@ internal static class Program
             streamOptions.KeyFrameInterval == 1000, "NativeAOT video allocation options activation");
         streamOptions.MaximumWidth = 1280;
         Require(streamOptions.MaximumWidth == 1280, "NativeAOT typed allocation setters");
-        for (int variant = 0; variant < 2; ++variant)
+        MatterCameraFailureCategory[] allocationCategories =
+        [
+            MatterCameraFailureCategory.Timeout, MatterCameraFailureCategory.DynamicConstraintError,
+            MatterCameraFailureCategory.ConstraintError, MatterCameraFailureCategory.CommandRejected,
+            MatterCameraFailureCategory.DynamicConstraintError, MatterCameraFailureCategory.MalformedData,
+            MatterCameraFailureCategory.ConnectionFailure, MatterCameraFailureCategory.Unknown
+        ];
+        uint[] rejectionCodes = [0x5cf, 0x587, 0x585];
+        for (int variant = 0; variant < 9; ++variant)
         {
             Marshal.ThrowExceptionForHR(GetCameraVideoStreamAllocationResult(variant, out var allocationPointer));
             MatterCameraVideoStreamAllocationResult allocation;
@@ -43,10 +51,23 @@ internal static class Program
                 Marshal.Release(allocationPointer);
             }
             Require(allocation.Succeeded == (variant == 0), "Allocation result success discrimination");
-            Require(variant == 0 ? allocation.Stream.StreamId == 7 && allocation.Stream.ReferenceCount == 1 && allocation.Failure is null
-                : allocation.Stream is null && allocation.Failure.Stage == MatterCameraStage.StreamAllocation &&
-                    allocation.Failure.Category == MatterCameraFailureCategory.Timeout && allocation.Failure.HasNativeError,
-                "NativeAOT typed owned allocation or exact failure");
+            Require(variant == 0 ? allocation.Stream.StreamId == 7 && allocation.Stream.IsLiveView &&
+                    allocation.Stream.ReferenceCount == 0 && allocation.Failure is null
+                : allocation.Stream is null && allocation.Failure.Stage ==
+                    (variant == 5 ? MatterCameraStage.StreamDeallocation : MatterCameraStage.StreamAllocation) &&
+                    allocation.Failure.Category == allocationCategories[variant - 1] && allocation.Failure.HasNativeError,
+                "NativeAOT unused allocated stream or exact failure");
+            if (variant > 0)
+            {
+                Require(MatterControllerApp.Camera.CameraAllocationOwnership.IsOutcomeUncertain(allocation.Failure) ==
+                    (variant == 1 || variant >= 5),
+                    "Receiver ownership lockout distinguishes refusal from timeout, malformed response, connection loss and failed release");
+                if (variant is >= 2 and <= 4)
+                {
+                    Require(allocation.Failure.NativeError == rejectionCodes[variant - 2] && !allocation.Failure.Retryable,
+                        "NativeAOT explicit IM allocation rejection preserves exact status without automatic retry");
+                }
+            }
         }
         Marshal.ThrowExceptionForHR(GetCameraDescriptor(out var pointer));
         MatterEndpointDescriptor descriptor;
@@ -277,7 +298,7 @@ internal static class Program
                 Directory.Delete(storage, recursive: true);
             }
         }
-        Console.WriteLine("PASS NativeAOT descriptors, discovery outcomes, streams, allocation options/results, additive APIs, nullable values, ICE and End results, activation, close and reopen");
+        Console.WriteLine("PASS NativeAOT descriptors, discovery outcomes, streams, allocation options/results/rejections, receiver ownership policy, additive APIs, nullable values, ICE and End results, activation, close and reopen");
     }
 
     private static void Require(bool condition, string invariant)

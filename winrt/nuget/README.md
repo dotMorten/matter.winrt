@@ -25,12 +25,18 @@ client-offer command path, not a manufacturer name or assumed endpoint.
 `AllocateVideoStreamAsync` and `TryAllocateVideoStreamAsync` request a typed
 H.264 LiveView stream with configurable, validated bounds. Options default to
 640x480, 30 fps, 500000-2000000 bits per second, and a 1000 ms key-frame interval.
-Successful allocation transfers one reference to the application. Explicitly
-close the session, then release that reference exactly once with
+Successful allocation transfers cleanup responsibility for the returned stream
+ID to the application. The advertised ReferenceCount measures transport use,
+not allocation ownership; zero is valid before a transport uses the stream.
+Explicitly close the session, then deallocate the owned stream exactly once with
 `DeallocateVideoStreamAsync` or `TryDeallocateVideoStreamAsync`. Existing start
 APIs never deallocate caller-owned streams. Cancellation/validation failure
-releases a known allocation reference; missing IDs or failed cleanup can leave
-ownership uncertain. Do not blindly retry reference-counted deallocation.
+deallocates a known owned stream; missing IDs or failed cleanup can leave
+ownership uncertain. Do not blindly repeat deallocation of a potentially reused ID.
+Explicit IM refusals preserve DynamicConstraintError, ConstraintError or
+CommandRejected categories and the exact native code. These are not unknown
+allocation outcomes or proof of a decoder defect, and never trigger automatic
+retries or release of unowned streams.
 New allocation and privacy APIs use additive `IMatterControllerCamera2`;
 the original camera interface remains binary compatible.
 `IsPrivacyEnabledAsync` reads advertised software/hardware privacy with a

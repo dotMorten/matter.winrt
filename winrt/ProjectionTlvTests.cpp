@@ -190,6 +190,93 @@ void TestInvalidStructureTag()
             uncertain.Failure().HasNativeError(), "An unknown dispatched allocation lost its uncertainty diagnostics");
     std::cout << "PASS invalid structure tags rejected and dispatched allocation timeout diagnostics preserved\n";
 }
+
+void TestAllocationRejectionResponses()
+{
+    namespace Controller = winrt::Matter::Windows::Controller;
+    using Category = Controller::MatterCameraFailureCategory;
+    using Status = chip::Protocols::InteractionModel::Status;
+    for (auto [status, category] : {
+             std::pair{ Status::DynamicConstraintError, Category::DynamicConstraintError },
+             std::pair{ Status::ConstraintError, Category::ConstraintError },
+             std::pair{ Status::InvalidCommand, Category::CommandRejected },
+             std::pair{ Status::Failure, Category::CommandRejected } })
+    {
+        Implementation::GenericInvokeState state(2, Camera::Id, Allocation::Id, {}, std::nullopt,
+                                                 Camera::Commands::VideoStreamAllocateResponse::Id, true);
+        const chip::app::StatusIB rejection(status);
+        state.OnResponse(nullptr, chip::app::ConcreteCommandPath(2, Camera::Id, Allocation::Id), rejection, nullptr);
+        state.OnDone(nullptr);
+        Require(state.complete && state.result == rejection.ToChipError() && !state.value,
+                "A camera rejection supplied allocation metadata or lost its exact status");
+        auto stage = Controller::MatterCameraStage::StreamAllocation;
+        auto result = Implementation::RunCameraOperation(stage, [&] {
+            Implementation::CheckChipError(state.result, L"Invoke Matter command");
+        });
+        Require(!result.Succeeded() && result.Failure().Category() == category &&
+                result.Failure().Stage() == Controller::MatterCameraStage::StreamAllocation &&
+                result.Failure().HasNativeError() && result.Failure().NativeError() == rejection.ToChipError().AsInteger() &&
+                !result.Failure().Retryable(), "Explicit allocation rejection became unknown/uncertain or retryable");
+    }
+    Implementation::GenericInvokeState malformed(2, Camera::Id, Allocation::Id, {}, std::nullopt,
+                                                 Camera::Commands::VideoStreamAllocateResponse::Id, true);
+    malformed.OnResponse(nullptr, chip::app::ConcreteCommandPath(3, Camera::Id, Allocation::Id),
+                         chip::app::StatusIB(Status::DynamicConstraintError), nullptr);
+    malformed.OnDone(nullptr);
+    Require(malformed.result == CHIP_ERROR_INVALID_ARGUMENT, "An uncorrelated rejection was treated as a known outcome");
+    std::cout << "PASS correlated allocation rejection statuses and uncorrelated-response ownership safeguards\n";
+}
+
+void TestZeroReferenceAllocatedMetadata()
+{
+    auto options = winrt::make<Implementation::MatterCameraVideoStreamOptions>();
+    auto defaults = winrt::get_self<Implementation::MatterCameraVideoStreamOptions>(options)->Snapshot();
+    options.MinimumWidth(1920);
+    options.MaximumWidth(1920);
+    options.MinimumHeight(1080);
+    options.MaximumHeight(1080);
+    options.MinimumFrameRate(30);
+    options.MaximumFrameRate(120);
+    options.MinimumBitRate(10000);
+    options.MaximumBitRate(10000);
+    options.KeyFrameInterval(4000);
+    auto g350 = winrt::get_self<Implementation::MatterCameraVideoStreamOptions>(options)->Snapshot();
+    for (auto const & request : { defaults, g350 })
+    {
+        for (uint8_t count : { uint8_t(0), uint8_t(1), UINT8_MAX })
+        {
+            Camera::Structs::VideoStreamStruct::Type metadata;
+            metadata.videoStreamID = 3;
+            metadata.streamUsage = request.streamUsage;
+            metadata.videoCodec = request.videoCodec;
+            metadata.minResolution = request.minResolution;
+            metadata.maxResolution = request.maxResolution;
+            metadata.minFrameRate = request.minFrameRate;
+            metadata.maxFrameRate = request.maxFrameRate;
+            metadata.minBitRate = request.minBitRate;
+            metadata.maxBitRate = request.maxBitRate;
+            metadata.keyFrameInterval = request.keyFrameInterval;
+            metadata.referenceCount = count;
+            auto stream = winrt::make<Implementation::MatterCameraVideoStream>(Implementation::CameraCommandArguments(metadata));
+            Implementation::MatterCameraVideoStreamOptions::ValidateAllocated(request, stream);
+            Require(stream.ReferenceCount() == count, "Transport reference count was coerced instead of preserved");
+            auto streams = winrt::single_threaded_vector<winrt::Matter::Windows::Controller::MatterCameraVideoStream>(
+                { stream }).GetView();
+            Require(Implementation::FindAllocatedLiveViewStream(streams, 3) == stream,
+                    "Allocation/start selection rejected an unused LiveView stream");
+            Require(!Implementation::FindAllocatedLiveViewStream(streams, 4),
+                    "Selection accepted a stream other than the returned ID");
+            metadata.streamUsage = chip::app::Clusters::Globals::StreamUsageEnum::kRecording;
+            auto recording = winrt::make<Implementation::MatterCameraVideoStream>(
+                Implementation::CameraCommandArguments(metadata));
+            auto otherUsage = winrt::single_threaded_vector<winrt::Matter::Windows::Controller::MatterCameraVideoStream>(
+                { recording }).GetView();
+            Require(!Implementation::FindAllocatedLiveViewStream(otherUsage, 3),
+                    "Zero reference count permitted a non-LiveView stream");
+        }
+    }
+    std::cout << "PASS default and reported G350 allocation metadata with zero/nonzero transport references\n";
+}
 } // namespace
 
 int main()
@@ -201,6 +288,8 @@ int main()
         TestNestedStructuresInArray();
         TestPreDispatchFailures();
         TestInvalidStructureTag();
+        TestAllocationRejectionResponses();
+        TestZeroReferenceAllocatedMetadata();
     }
     catch (winrt::hresult_error const & error)
     {

@@ -142,24 +142,35 @@ may set nonzero, ordered resolution/frame-rate/bitrate bounds and a key-frame
 interval before allocation; options are snapshotted before background work.
 Preflight checks advertised video/allocation commands, privacy, sensor limits,
 minimum viewport, and LiveView usage. The returned stream must match the
-request and have a positive reference count. The SDK does not choose another
-codec or silently relax unsupported parameters.
+request. `ReferenceCount` reports transport usage, not allocation existence:
+a newly allocated stream with count zero is valid before signaling starts.
+The SDK preserves that value, does not choose another codec, and does not
+silently relax unsupported parameters.
 
-A successful allocation transfers **one allocation reference** to the caller,
-even when another client shares the returned stream ID. Close the signaling
-session, then release that reference exactly once with
+A successful allocation transfers **cleanup responsibility for the returned
+stream ID** to the caller, not a protocol transport-count increment.
+Close the signaling session, then deallocate that owned stream exactly once with
 `DeallocateVideoStreamAsync` or `TryDeallocateVideoStreamAsync`. Metadata reads
-do not acquire references, and existing start APIs never release caller-owned
+do not acquire ownership, and existing start APIs never release caller-owned
 streams. Structured allocation results contain either a stream or a failure,
 including allocation/deallocation stages and exact known native status.
 Cancellation remains cancellation. A dispatched allocation is allowed to finish
-so cancellation or metadata-validation failure can release its known reference.
+so cancellation or metadata-validation failure can deallocate its known stream.
 Missing/reserved response IDs or failed cleanup can leave remote ownership
-uncertain: do not guess an ID or blindly retry reference-counted deallocation.
+uncertain: do not guess an ID or blindly repeat deallocation of a potentially
+reused ID. A transport count of zero is not proof that an arbitrary stream is
+owned by this caller; a positive count may prevent deallocation while in use.
 Proven local command-encoding and controller-state failures remain at the
 Validation stage; they do not indicate a remote allocation. The
 StreamAllocation stage begins only at the connection/dispatch boundary, and
 unknown outcomes there retain the same conservative ownership safeguards.
+Explicit IM allocation refusals remain at StreamAllocation with
+`DynamicConstraintError`, `ConstraintError`, or `CommandRejected` categories,
+alongside existing access/unsupported/state/resource categories. The exact
+native status is preserved; rejection is not an unknown allocation outcome.
+The sample does not lock out allocation merely because a correlated rejection
+was returned, but does not automatically retry. A later failed release still
+has uncertain ownership regardless of its category.
 Deallocation continues its bounded cleanup even if the asynchronous wait is
 canceled. The original camera interface remains unchanged; allocation and
 privacy methods use the additive `IMatterControllerCamera2` interface.
@@ -261,9 +272,9 @@ pin or overwriting the published preview version:
 
 ```powershell
 .\tools\build.ps1 -Architecture all -MatterSdkRoot C:\src\matterforwindows `
-    -BuildCameraSignaling -Version 0.2.0-camera.15
+    -BuildCameraSignaling -Version 0.2.0-camera.17
 .\tools\test-camera-nativeaot.ps1 -MatterSdkRoot C:\src\matterforwindows `
-    -PackageVersion 0.2.0-camera.15
+    -PackageVersion 0.2.0-camera.17
 ```
 
 Explicit development build options cannot be combined with `-SkipBuild`, which
@@ -289,6 +300,28 @@ generated camera allocation round trips preserve distinct nested resolutions,
 optional true/false flags, structures inside arrays, and following sibling
 fields. Pre-dispatch diagnostic tests verify local encoding failures do not
 become uncertain remote allocations. These tests add no public API or exports.
+Command-response regressions cover correlated DynamicConstraintError,
+ConstraintError and other IM refusals, and reject uncorrelated responses.
+NativeAOT tests exercise the receiver's actual ownership policy for rejection
+versus uncertain timeout across the projection boundary. Generated metadata
+tests cover both defaults and the reported G350 1920x1080 / 30-120 fps /
+10000-bit/s / 4000-ms allocation profile with zero, one and maximum transport
+counts. Allocation validation and start selection accept zero without weakening
+stream-ID, LiveView, codec, bounds, privacy or cleanup checks. This is regression
+evidence, not successful camera signaling or playback.
+
+Advertised sensor limits, minimum viewport, rate-distortion points and maximum
+network bandwidth are not a promise that every combination inside those bounds
+can be allocated. The upstream Linux camera delegate checks its available HAL
+stream configurations and returns DynamicConstraintError when none match;
+encoder/pixel-rate exhaustion is separately reported as ResourceExhausted.
+These are upstream example behaviors, not evidence of a vendor camera's
+implementation. When allocation is rejected, inspect stream usage priorities,
+feature-gated watermark/OSD requirements, all allocated stream usages, and
+the device's supported encoder tuples. A broad range using the total network
+limit as a stream bitrate may be less compatible than a constrained tuple.
+Do not change priorities, relax parameters, or release unowned streams
+automatically. No allocation rejection establishes a WebRTC or decoder defect.
 Receiver tests use simulated peer connections, including early ICE,
 stale callbacks, decoded dimension bounds/progress, payload/queue limits, and
 100 local start/stop cycles. None of

@@ -359,7 +359,10 @@ namespace Matter.Windows.Controller
         Timeout = 6,
         ConnectionFailure = 7,
         MalformedData = 8,
-        InvalidState = 9
+        InvalidState = 9,
+        DynamicConstraintError = 10,
+        ConstraintError = 11,
+        CommandRejected = 12
     };
 
     runtimeclass MatterCameraFailure
