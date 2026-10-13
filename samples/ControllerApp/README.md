@@ -82,7 +82,7 @@ direct development outputs:
 ```powershell
 dotnet build .\samples\ControllerApp\MatterControllerApp.csproj `
     -p:Platform=x64 -p:Unpackaged=true `
-    -p:MatterControllerPackageVersion=0.2.0-camera.17 -p:MatterCameraDevelopment=true
+    -p:MatterControllerPackageVersion=0.2.0-camera.19 -p:MatterCameraDevelopment=true
 ```
 
 The package version property defaults to the existing published preview, and
@@ -129,6 +129,11 @@ of a stream obtained only through metadata reads. SDK callers may configure the
 reported G350 allocation profile (1920x1080, 30-120 fps, fixed 10000-bit/s bitrate,
 4000-ms key-frame interval) through `MatterCameraVideoStreamOptions`; the sample's
 default button does not silently switch to this profile or retry.
+
+The current receiver remains video-only: the SDK omits AudioStreamID rather
+than requesting automatic audio selection with protocol null. Listening,
+talkback, microphone permission handling and typed audio allocation are not
+implemented by this package. No client microphone capture is enabled.
 
 The WebView2 page is mapped only to `https://matter-camera.local/receiver.html`.
 This sample intentionally uses no ICE servers. The SDK's typed ICE-server input

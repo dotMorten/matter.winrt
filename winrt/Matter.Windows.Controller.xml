@@ -202,7 +202,7 @@
       <summary>Binds camera operations to an existing controller.</summary>
     </member>
     <member name="M:Matter.Windows.Controller.MatterControllerCamera.StartWithAllocatedVideoStreamAsync(System.UInt64,System.UInt16,System.UInt16,System.String)">
-      <summary>Validates camera composition, advertised privacy, and an allocated LiveView stream, then sends a bounded SDP offer. The caller owns stream allocation, capability and codec selection, and deallocation. Successful completion is not media playback. Failed or canceled starts attempt bounded remote cleanup for known protocol identities.</summary>
+      <summary>Validates camera composition, advertised privacy, and an allocated LiveView stream, then sends a bounded video-only SDP offer with AudioStreamID omitted rather than present-null automatic audio selection. The caller owns stream allocation, capability and codec selection, and deallocation. Successful completion is not media playback. Failed or canceled starts attempt bounded remote cleanup for known protocol identities.</summary>
     </member>
     <member name="T:Matter.Windows.Controller.MatterCameraSession">
       <summary>Owns one local signaling session. Explicitly await CloseAsync before releasing caller-owned streams. Controller shutdown invalidates the session.</summary>

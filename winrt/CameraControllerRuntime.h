@@ -122,8 +122,8 @@ public:
             mEndpoint.reset();
             return error;
         }
-        error = mEndpoint->Signaling().CreateSession(peer, endpoint, chip::app::DataModel::Nullable<uint16_t>(videoStream),
-                                                    chip::app::DataModel::Nullable<uint16_t>(), mNativeHandle);
+        error = mEndpoint->Signaling().CreateSession(peer, endpoint, Cluster::StreamSelection::ExplicitId(videoStream),
+                                                    Cluster::StreamSelection::Absent(), mNativeHandle);
         if (error != CHIP_NO_ERROR)
         {
             LogErrorOnFailure(mEndpoint->Unregister());
@@ -146,6 +146,12 @@ public:
     {
         ReturnErrorOnFailure(Validate(handle));
         return mEndpoint->Signaling().GetSessionState(mNativeHandle, state);
+    }
+
+    CHIP_ERROR GetSessionInfo(uint64_t handle, Cluster::SessionInfo & info) const
+    {
+        ReturnErrorOnFailure(Validate(handle));
+        return mEndpoint->Signaling().GetSessionInfo(mNativeHandle, info);
     }
 
     std::optional<Cluster::Signal> TakeSignal(uint64_t handle)

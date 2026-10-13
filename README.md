@@ -122,6 +122,11 @@ does not fall back to independently chosen, incorrectly advertised ports.
 
 The start operation verifies the endpoint composition, advertised privacy
 attributes, and the selected allocated LiveView stream before sending an offer.
+Existing video-only start APIs now omit AudioStreamID using the native tagged
+selection API. Present protocol null requests automatic audio selection and is
+not used as a substitute for no audio. This camera preview requires the matching
+native SDK media-selection implementation when built with signaling enabled;
+it does not yet expose listening, talkback, or typed audio allocation.
 `ReadCapabilitiesAsync` exposes the endpoint Descriptor and both camera clusters'
 revisions, raw feature maps, attribute IDs, and accepted/generated command IDs
 through typed collections. Unknown feature bits stay intact.
@@ -272,9 +277,9 @@ pin or overwriting the published preview version:
 
 ```powershell
 .\tools\build.ps1 -Architecture all -MatterSdkRoot C:\src\matterforwindows `
-    -BuildCameraSignaling -Version 0.2.0-camera.17
+    -BuildCameraSignaling -Version 0.2.0-camera.19
 .\tools\test-camera-nativeaot.ps1 -MatterSdkRoot C:\src\matterforwindows `
-    -PackageVersion 0.2.0-camera.17
+    -PackageVersion 0.2.0-camera.19
 ```
 
 Explicit development build options cannot be combined with `-SkipBuild`, which

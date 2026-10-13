@@ -242,6 +242,17 @@ void TestHostedControllerComposition()
     {
         Require(host.Create(fabrics.GetFabricTable(), sessions, system, ScopedNodeId(0x1234, fabric), 2, 1, handle) ==
                     CHIP_NO_ERROR, "Hosted camera creation failed");
+        Implementation::CameraControllerRuntime::Cluster::SessionInfo info;
+        Require(host.GetSessionInfo(handle, info) == CHIP_NO_ERROR, "Hosted session metadata was unavailable");
+        using Selection = Implementation::CameraControllerRuntime::Cluster::StreamSelection;
+        Require(info.videoSelection.GetKind() == Selection::Kind::ExplicitId &&
+                    info.audioSelection.GetKind() == Selection::Kind::Absent,
+                "Video-only WinRT startup requested automatic camera audio");
+        Clusters::WebRTCTransportProvider::Commands::ProvideOffer::Type offer;
+        Require(chip::Controller::CameraProviderClient::BuildOffer(info, host.RequestorEndpoint(), "v=0\r\n"_span, {}, offer) ==
+                    CHIP_NO_ERROR && offer.videoStreamID.HasValue() && !offer.audioStreamID.HasValue() &&
+                    !offer.videoStreams.HasValue() && !offer.audioStreams.HasValue(),
+                "The production WinRT offer did not omit camera audio");
         ReadOnlyBufferBuilder<DataModel::ServerClusterEntry> builder;
         Require(host.Provider().ServerClusters(host.RequestorEndpoint(), builder) == CHIP_NO_ERROR,
                 "Hosted metadata was not routable");

@@ -22,6 +22,10 @@ structured discovery failures, preserving known native status.
 `ReadCapabilitiesAsync` provides typed cluster revisions, feature maps, and
 attribute/command lists. Video start requires advertised video and the complete
 client-offer command path, not a manufacturer name or assumed endpoint.
+Video-only start omits AudioStreamID; protocol null would request automatic
+audio selection. Camera-signaling development builds require the matching
+native media-selection implementation. Typed audio allocation, listening and
+talkback remain unimplemented; this package does not activate microphone capture.
 `AllocateVideoStreamAsync` and `TryAllocateVideoStreamAsync` request a typed
 H.264 LiveView stream with configurable, validated bounds. Options default to
 640x480, 30 fps, 500000-2000000 bits per second, and a 1000 ms key-frame interval.
