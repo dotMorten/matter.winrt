@@ -214,9 +214,32 @@ receiving terminal failure.
 node --test .\tools\test-camera-receiver.cjs
 ```
 
-These tests simulate peer connections, permissions and media statistics, and
+For actual Windows WebView2 H.264/Opus encoding/decoding and track teardown,
+run the isolated synthetic loopback:
+
+```powershell
+.\tools\test-camera-receiver-media.ps1 `
+    -OutputDirectory C:\temp\matter-camera-media-test-1 `
+    -PackageVersion 0.2.0-camera.20
+```
+
+Use a fresh output directory for each run. The special test build starts neither
+the Matter controller nor the widget provider and does not stop a running widget
+host. It uses an isolated browser profile, denies all native permission requests,
+generates video and mono tones locally, and keeps playback sinks muted. The
+capture seam is replaced only in the test fixture with a synthetic WebAudio
+source; it never calls the real microphone API. Autoplay policy is relaxed only
+in this isolated test browser. Video-only, listening and synthetic full-duplex
+cases check real codec/sample progress, no automatic capture, rejection of
+untrusted DOM presses, capture revocation and repeated Stop. Stale fixture
+callbacks are scoped to their own peer/token. Results exclude SDP/ICE and
+explicitly report `physicalAudibilityValidated: false`. The fixture is excluded
+from ordinary sample builds and packages.
+
+The Node tests simulate peer connections, permissions and media statistics, and
 the NativeAOT tests exercise the production profile/ownership policies. They do
-not prove physical audibility or permission-dialog behavior. Validate video,
+not prove physical audibility or permission-dialog behavior; neither does the
+separate real-browser synthetic loopback. Validate video,
 audible camera-to-client listening, permitted push-to-talk audible at the camera,
 no capture after release/backgrounding/reconnect/privacy, and empty owned
 allocations after Stop on representative hardware. At least microphone-only and

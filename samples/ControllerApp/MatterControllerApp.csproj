@@ -22,7 +22,9 @@
     <WindowsAppSDKSelfContained Condition="'$(Unpackaged)' == 'true'">true</WindowsAppSDKSelfContained>
     <MatterControllerPackageVersion Condition="'$(MatterControllerPackageVersion)' == ''">0.1.0-preview.9</MatterControllerPackageVersion>
     <MatterCameraDevelopment Condition="'$(MatterCameraDevelopmentRoot)' != ''">true</MatterCameraDevelopment>
+    <MatterCameraDevelopment Condition="'$(MatterCameraMediaTest)' == 'true'">true</MatterCameraDevelopment>
     <DefineConstants Condition="'$(MatterCameraDevelopment)' == 'true'">$(DefineConstants);MATTER_CAMERA_DEVELOPMENT</DefineConstants>
+    <DefineConstants Condition="'$(MatterCameraMediaTest)' == 'true'">$(DefineConstants);MATTER_CAMERA_MEDIA_TEST</DefineConstants>
     <CsWinRTIncludes Condition="'$(MatterCameraDevelopmentRoot)' != ''">Matter.Windows.Controller</CsWinRTIncludes>
   </PropertyGroup>
 
@@ -37,6 +39,12 @@
     <Content Include="Assets\AppIcon.ico" />
     <Content Include="Assets\Wide310x150Logo.scale-200.png" />
     <Content Include="Widgets\MatterControlsTemplate.json" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(MatterCameraMediaTest)' == 'true'">
+    <Content Include="..\..\tools\camera-receiver-media-test.js" Link="Camera\camera-receiver-media-test.js">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
   </ItemGroup>
 
   <ItemGroup>

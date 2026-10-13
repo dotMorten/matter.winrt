@@ -13,10 +13,24 @@ public static class Program
         @"Local\MatterControllerApp.WidgetProviderShutdownComplete";
 
     public static bool IsWidgetProviderProcess { get; private set; }
+#if MATTER_CAMERA_MEDIA_TEST
+    public static string? CameraMediaTestResultPath { get; private set; }
+#endif
 
     [MTAThread]
     public static void Main(string[] args)
     {
+#if MATTER_CAMERA_MEDIA_TEST
+        int testArgument = Array.IndexOf(args, "--camera-media-selftest");
+        if (testArgument >= 0)
+        {
+            if (testArgument + 1 >= args.Length)
+            {
+                throw new ArgumentException("The media self-test requires an isolated result file.");
+            }
+            CameraMediaTestResultPath = Path.GetFullPath(args[testArgument + 1]);
+        }
+#endif
         if (args.Contains(WidgetServerArgument, StringComparer.OrdinalIgnoreCase))
         {
             IsWidgetProviderProcess = true;
@@ -24,7 +38,12 @@ public static class Program
             return;
         }
 
-        StopWidgetProvider();
+#if MATTER_CAMERA_MEDIA_TEST
+        if (CameraMediaTestResultPath is null)
+#endif
+        {
+            StopWidgetProvider();
+        }
         Thread uiThread = new(RunApplication);
         uiThread.SetApartmentState(ApartmentState.STA);
         uiThread.Start();
@@ -34,7 +53,11 @@ public static class Program
     private static void RunApplication()
     {
         WinRT.ComWrappersSupport.InitializeComWrappers();
-        using WidgetProviderRegistration registration = WidgetProviderRegistration.Register();
+        using WidgetProviderRegistration? registration =
+#if MATTER_CAMERA_MEDIA_TEST
+            CameraMediaTestResultPath is not null ? null :
+#endif
+            WidgetProviderRegistration.Register();
         Application.Start(_ =>
         {
             DispatcherQueueSynchronizationContext context =

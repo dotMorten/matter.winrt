@@ -16,6 +16,9 @@ try {
             throw "Camera MSIX is missing $name."
         }
     }
+    if ($archive.GetEntry("Camera/camera-receiver-media-test.js")) {
+        throw "Ordinary camera MSIX must not ship the synthetic capture fixture."
+    }
     $manifestEntry = $archive.GetEntry("AppxManifest.xml")
     if (-not $manifestEntry) {
         throw "Camera MSIX is missing its manifest."
