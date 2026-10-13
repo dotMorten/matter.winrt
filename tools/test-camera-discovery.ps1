@@ -36,3 +36,21 @@ if ($LASTEXITCODE -ne 0) {
 if ($LASTEXITCODE -ne 0) {
     throw "Camera discovery projection tests failed."
 }
+
+$tlvObject = Join-Path $output "ProjectionTlvTests.obj"
+$tlvExecutable = Join-Path $output "ProjectionTlvTests.exe"
+& cl.exe "@$options" /c (Join-Path $winrtRoot "winrt\ProjectionTlvTests.cpp") "/Fo$tlvObject"
+if ($LASTEXITCODE -ne 0) {
+    throw "Private TLV bridge test compilation failed."
+}
+# The test includes Projection.cpp to exercise private functions without exporting a test API.
+$tlvObjects = @($objects | Where-Object { [System.IO.Path]::GetFileName($_) -ne "Projection.obj" })
+& link.exe /nologo "/MACHINE:$machine" "/OUT:$tlvExecutable" $tlvObject @tlvObjects $library `
+    WindowsApp.lib ws2_32.lib iphlpapi.lib Advapi32.lib Ole32.lib Shell32.lib dnsapi.lib
+if ($LASTEXITCODE -ne 0) {
+    throw "Private TLV bridge test link failed."
+}
+& $tlvExecutable
+if ($LASTEXITCODE -ne 0) {
+    throw "Private TLV bridge tests failed."
+}

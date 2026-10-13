@@ -273,9 +273,10 @@ CHIP_ERROR DecodeTlvValue(TLV::TLVReader & reader, Windows::Foundation::IInspect
         while ((error = reader.Next()) == CHIP_NO_ERROR)
         {
             VerifyOrReturnError(TLV::IsContextTag(reader.GetTag()), CHIP_ERROR_INVALID_TLV_TAG);
+            const auto fieldTag = reader.GetTag();
             Windows::Foundation::IInspectable field;
             ReturnErrorOnFailure(DecodeTlvValue(reader, field));
-            properties.Insert(to_hstring(TLV::TagNumFromTag(reader.GetTag())), field);
+            properties.Insert(to_hstring(TLV::TagNumFromTag(fieldTag)), field);
         }
         VerifyOrReturnError(error == CHIP_END_OF_TLV, error);
         ReturnErrorOnFailure(reader.ExitContainer(container));
@@ -1827,14 +1828,24 @@ public:
                                                                   Windows::Foundation::Collections::IPropertySet const & arguments,
                                                                   std::optional<uint16_t> timedInvokeTimeout = std::nullopt,
                                                                   std::optional<CommandId> responseCommand = std::nullopt,
-                                                                  bool responseData = false)
+                                                                  bool responseData = false,
+                                                                  Controller::MatterCameraStage * allocationStage = nullptr)
     {
+        if (allocationStage != nullptr)
+        {
+            *allocationStage = Controller::MatterCameraStage::Validation;
+        }
         std::vector<uint8_t> encoded;
         CheckChipError(EncodePropertySetRoot(arguments, encoded), L"Encode Matter command arguments");
         std::scoped_lock operationLock(mOperationMutex);
         EnsureOpen();
         GenericInvokeState state(endpointId, clusterId, commandId, std::move(encoded), timedInvokeTimeout, responseCommand,
                                  responseData);
+        if (allocationStage != nullptr)
+        {
+            // Once connection/dispatch begins, conservatively preserve uncertain allocation ownership on failure.
+            *allocationStage = Controller::MatterCameraStage::StreamAllocation;
+        }
         StartConnectedOperation(nodeId, state.onConnected, state.onConnectionFailure);
         std::unique_lock lock(state.mutex);
         if (!state.condition.wait_for(lock, InteractionWaitTimeout(timedInvokeTimeout), [&state]() { return state.complete; }))
@@ -3894,10 +3905,10 @@ Controller::MatterCameraVideoStream AllocateCameraVideoStream(
     {
         throw hresult_canceled();
     }
-    stage = Controller::MatterCameraStage::StreamAllocation;
+    stage = Controller::MatterCameraStage::Validation;
     // Do not cancel a dispatched allocation before recovering its owned reference.
     auto response = runtime->InvokeCommand(nodeId, endpointId, Id, request.GetCommandId(), CameraCommandArguments(request),
-                                          std::nullopt, Commands::VideoStreamAllocateResponse::Id, true);
+                                          std::nullopt, Commands::VideoStreamAllocateResponse::Id, true, &stage);
     const auto streamId = CameraStreamField<uint16_t>(response, L"0");
     if (streamId == UINT16_MAX)
     {

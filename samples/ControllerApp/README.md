@@ -82,7 +82,7 @@ direct development outputs:
 ```powershell
 dotnet build .\samples\ControllerApp\MatterControllerApp.csproj `
     -p:Platform=x64 -p:Unpackaged=true `
-    -p:MatterControllerPackageVersion=0.2.0-camera.14 -p:MatterCameraDevelopment=true
+    -p:MatterControllerPackageVersion=0.2.0-camera.15 -p:MatterCameraDevelopment=true
 ```
 
 The package version property defaults to the existing published preview, and
@@ -117,6 +117,9 @@ Externally allocated streams are never deallocated by the sample: stop the
 receiver before releasing your reference. An uncertain allocation/release
 disables further starts in that window; it never guesses IDs or blindly repeats
 reference-counted deallocation.
+Proven local encoding failures report Validation and do not disable further
+allocation as an uncertain remote outcome. Unknown outcomes after dispatch
+retain the ownership safeguards above; the sample does not automatically retry.
 
 The WebView2 page is mapped only to `https://matter-camera.local/receiver.html`.
 This sample intentionally uses no ICE servers. The SDK's typed ICE-server input

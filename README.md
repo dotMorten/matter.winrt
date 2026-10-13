@@ -156,6 +156,10 @@ Cancellation remains cancellation. A dispatched allocation is allowed to finish
 so cancellation or metadata-validation failure can release its known reference.
 Missing/reserved response IDs or failed cleanup can leave remote ownership
 uncertain: do not guess an ID or blindly retry reference-counted deallocation.
+Proven local command-encoding and controller-state failures remain at the
+Validation stage; they do not indicate a remote allocation. The
+StreamAllocation stage begins only at the connection/dispatch boundary, and
+unknown outcomes there retain the same conservative ownership safeguards.
 Deallocation continues its bounded cleanup even if the asynchronous wait is
 canceled. The original camera interface remains unchanged; allocation and
 privacy methods use the additive `IMatterControllerCamera2` interface.
@@ -257,9 +261,9 @@ pin or overwriting the published preview version:
 
 ```powershell
 .\tools\build.ps1 -Architecture all -MatterSdkRoot C:\src\matterforwindows `
-    -BuildCameraSignaling -Version 0.2.0-camera.14
+    -BuildCameraSignaling -Version 0.2.0-camera.15
 .\tools\test-camera-nativeaot.ps1 -MatterSdkRoot C:\src\matterforwindows `
-    -PackageVersion 0.2.0-camera.14
+    -PackageVersion 0.2.0-camera.15
 ```
 
 Explicit development build options cannot be combined with `-SkipBuild`, which
@@ -280,6 +284,11 @@ close/reopen, typed allocated streams, allocation options/results, the additive
 camera interface, privacy input/lifecycle errors, nullable flags, and structured
 failures. Allocation ownership tests cover 100 cancellation/release races and
 preserve uncertain release failures without repeating deallocation.
+The same test command also runs private production TLV-bridge regressions:
+generated camera allocation round trips preserve distinct nested resolutions,
+optional true/false flags, structures inside arrays, and following sibling
+fields. Pre-dispatch diagnostic tests verify local encoding failures do not
+become uncertain remote allocations. These tests add no public API or exports.
 Receiver tests use simulated peer connections, including early ICE,
 stale callbacks, decoded dimension bounds/progress, payload/queue limits, and
 100 local start/stop cycles. None of
