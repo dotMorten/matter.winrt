@@ -767,5 +767,80 @@
     <member name="M:Matter.Windows.Controller.MatterController.GetLevelControlCluster(System.UInt64,System.UInt16)"><summary>Creates a typed Level Control cluster client.</summary><param name="nodeId">The node identifier.</param><param name="endpointId">The endpoint identifier.</param><returns>The cluster client.</returns></member>
     <member name="M:Matter.Windows.Controller.MatterController.GetBasicInformationCluster(System.UInt64,System.UInt16)"><summary>Creates a typed Basic Information cluster client.</summary><param name="nodeId">The node identifier.</param><param name="endpointId">The endpoint identifier.</param><returns>The cluster client.</returns></member>
     <member name="M:Matter.Windows.Controller.MatterController.CloseAsync"><summary>Stops subscriptions, shuts down the Matter stack, and releases the storage directory.</summary><returns>An asynchronous close action.</returns></member>
+    <member name="T:Matter.Windows.Controller.MatterCameraStreamSelectionKind">
+      <summary>Distinguishes field omission, automatic selection by present protocol null, and explicit numeric media IDs.</summary>
+    </member>
+    <member name="T:Matter.Windows.Controller.MatterCameraStreamSelection">
+      <summary>Immutable selection for one medium. Only ExplicitId accepts a required nonreserved ID; zero is valid. Absent and AutoSelect require a null ID.</summary>
+    </member>
+    <member name="T:Matter.Windows.Controller.MatterCameraAudioFormatCapabilities">
+      <summary>Preserves advertised codec, channel, sample-rate and bit-depth values. Unknown codecs remain explicit; intersect with the actual media engine before allocation.</summary>
+    </member>
+    <member name="T:Matter.Windows.Controller.MatterCameraAudioCapabilities">
+      <summary>Camera-specific protocol capability snapshot, raw audio formats, nullable advertised remote mute/volume/talk state, privacy and bandwidth. Does not prove sound or authorize local capture.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterCameraAudioCapabilities.SupportsListening">
+      <summary>Gets whether the supported camera composition/revisions, known microphone codec and complete audio command path are advertised. Media-engine format intersection and audible playback remain independent.</summary>
+    </member>
+    <member name="T:Matter.Windows.Controller.MatterCameraAudioStream">
+      <summary>Preserves allocated audio ID, raw usage/codec, channels, rate, bitrate, depth and transport ReferenceCount. Zero references are valid; reading this object acquires no cleanup ownership.</summary>
+    </member>
+    <member name="T:Matter.Windows.Controller.MatterCameraAudioStreamOptions">
+      <summary>Requires a caller-negotiated Opus/AAC-LC LiveView format, 1-8 channels, nonzero rate/bitrate and 8/16/24/32 bit depth. Default options are deliberately not allocatable.</summary>
+    </member>
+    <member name="T:Matter.Windows.Controller.MatterCameraAudioStreamAllocationResult">
+      <summary>Contains an exact validated audio allocation with cleanup responsibility, or structured failure with exact known status. Unknown outcomes must not be retried blindly.</summary>
+    </member>
+    <member name="M:Matter.Windows.Controller.MatterControllerCamera.ReadAudioCapabilitiesAsync(System.UInt64,System.UInt16)">
+      <summary>Reads camera-only audio formats and advertised controls with cancellation and a 120-second aggregate deadline. Requires Camera device type revision 1-2, generated camera/provider revision 2 and requestor-client composition; absent optional state stays null.</summary>
+    </member>
+    <member name="M:Matter.Windows.Controller.MatterControllerCamera.ReadAllocatedAudioStreamsAsync(System.UInt64,System.UInt16)">
+      <summary>Reads raw typed audio allocation metadata without acquiring release ownership. Malformed, duplicate or reserved IDs are errors.</summary>
+    </member>
+    <member name="M:Matter.Windows.Controller.MatterControllerCamera.AllocateAudioStreamAsync(System.UInt64,System.UInt16,Matter.Windows.Controller.MatterCameraAudioStreamOptions)">
+      <summary>Snapshots caller-negotiated options, checks microphone formats, LiveView usage, bandwidth and privacy, and validates the exact returned ID/readback. Cancellation or readback failure releases a known owned ID once; uncertain outcomes block another allocation on this controller endpoint.</summary>
+    </member>
+    <member name="M:Matter.Windows.Controller.MatterControllerCamera.TryAllocateAudioStreamAsync(System.UInt64,System.UInt16,Matter.Windows.Controller.MatterCameraAudioStreamOptions)">
+      <summary>Allocates audio with a typed stream-or-failure result and preserved native rejection categories. Performs no automatic retries; cancellation remains cancellation.</summary>
+    </member>
+    <member name="M:Matter.Windows.Controller.MatterControllerCamera.DeallocateAudioStreamAsync(System.UInt64,System.UInt16,System.UInt16)">
+      <summary>Releases this controller's exact owned audio ID once after local media and signaling close. External, wrong-peer/endpoint and already-attempted IDs are rejected without dispatch; failure retains uncertain ownership.</summary>
+    </member>
+    <member name="M:Matter.Windows.Controller.MatterControllerCamera.TryDeallocateAudioStreamAsync(System.UInt64,System.UInt16,System.UInt16)">
+      <summary>Performs owned audio release with structured diagnostics. Cleanup continues after wait cancellation. Finish cleanup before controller shutdown; never blindly repeat a failed release.</summary>
+    </member>
+    <member name="M:Matter.Windows.Controller.MatterControllerCamera.StartSessionAsync(System.UInt64,System.UInt16,Matter.Windows.Controller.MatterCameraStreamSelection,Matter.Windows.Controller.MatterCameraStreamSelection,System.String,Windows.Foundation.Collections.IVectorView{Matter.Windows.Controller.MatterCameraIceServer})">
+      <summary>Starts a camera-only session with independently tagged media selections, bounded caller SDP and an explicit zero-to-four ICE-server collection. Checks selected LiveView formats and privacy before/after signaling. Startup failure/cancellation closes the session, not externally selected allocations. Media directions, permissions and playback belong to the media engine.</summary>
+    </member>
+    <member name="M:Matter.Windows.Controller.MatterControllerCamera.TryStartSessionAsync(System.UInt64,System.UInt16,Matter.Windows.Controller.MatterCameraStreamSelection,Matter.Windows.Controller.MatterCameraStreamSelection,System.String,Windows.Foundation.Collections.IVectorView{Matter.Windows.Controller.MatterCameraIceServer})">
+      <summary>Starts explicit audio/video selection with structured stage/status diagnostics. Both media absent is invalid. Automatic selection never grants allocation cleanup ownership.</summary>
+    </member>
+    <member name="M:Matter.Windows.Controller.MatterControllerCamera.WriteMicrophoneMuteAsync(System.UInt64,System.UInt16,System.Boolean)">
+      <summary>Writes advertised remote camera microphone mute only. Does not change local capture or camera privacy; privacy prevents unmuting.</summary>
+    </member>
+    <member name="M:Matter.Windows.Controller.MatterControllerCamera.WriteSpeakerMuteAsync(System.UInt64,System.UInt16,System.Boolean)">
+      <summary>Writes advertised remote camera speaker mute only. Does not change local output or camera privacy; privacy prevents unmuting.</summary>
+    </member>
+    <member name="M:Matter.Windows.Controller.MatterControllerCamera.WriteMicrophoneVolumeAsync(System.UInt64,System.UInt16,System.Byte)">
+      <summary>Writes advertised remote microphone level within ordered device min/max bounds. Never unmutes or changes local capture volume.</summary>
+    </member>
+    <member name="M:Matter.Windows.Controller.MatterControllerCamera.WriteSpeakerVolumeAsync(System.UInt64,System.UInt16,System.Byte)">
+      <summary>Writes advertised remote speaker level within ordered device min/max bounds. Never unmutes or changes local playback volume.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterCameraSession.RequestedVideoSelection">
+      <summary>Gets the immutable originally requested video selection, independently of the provider's resolved ID.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterCameraSession.RequestedAudioSelection">
+      <summary>Gets the immutable originally requested audio selection, independently of the provider's resolved ID.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterCameraSession.VideoStreamId">
+      <summary>Gets the nullable resolved video ID captured after the provider response; zero is valid. Does not grant release ownership.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterCameraSession.AudioStreamId">
+      <summary>Gets the nullable resolved audio ID captured after the provider response; zero is valid. Does not grant release ownership.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterCameraSession.ProtocolSessionId">
+      <summary>Gets the nullable protocol identity captured after the provider response, including zero. Separate from the private session Handle; retained after close.</summary>
+    </member>
   </members>
 </doc>

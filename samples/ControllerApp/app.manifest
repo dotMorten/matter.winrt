@@ -28,5 +28,7 @@
     <activatableClass name="Matter.Windows.Controller.MatterCameraIceCandidate" threadingModel="both" xmlns="urn:schemas-microsoft-com:winrt.v1" />
     <activatableClass name="Matter.Windows.Controller.MatterCameraIceServer" threadingModel="both" xmlns="urn:schemas-microsoft-com:winrt.v1" />
     <activatableClass name="Matter.Windows.Controller.MatterCameraVideoStreamOptions" threadingModel="both" xmlns="urn:schemas-microsoft-com:winrt.v1" />
+    <activatableClass name="Matter.Windows.Controller.MatterCameraAudioStreamOptions" threadingModel="both" xmlns="urn:schemas-microsoft-com:winrt.v1" />
+    <activatableClass name="Matter.Windows.Controller.MatterCameraStreamSelection" threadingModel="both" xmlns="urn:schemas-microsoft-com:winrt.v1" />
   </file>
 </assembly>

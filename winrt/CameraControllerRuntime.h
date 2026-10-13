@@ -100,6 +100,14 @@ public:
                       chip::ScopedNodeId peer,
                       uint16_t endpoint, uint16_t videoStream, uint64_t & handle)
     {
+        return Create(fabrics, sessions, system, peer, endpoint, Cluster::StreamSelection::ExplicitId(videoStream),
+                      Cluster::StreamSelection::Absent(), handle);
+    }
+
+    CHIP_ERROR Create(chip::FabricTable & fabrics, chip::CASESessionManager & sessions, chip::System::Layer & system,
+                      chip::ScopedNodeId peer, uint16_t endpoint, Cluster::StreamSelection video,
+                      Cluster::StreamSelection audio, uint64_t & handle)
+    {
         VerifyOrReturnError(mActiveHandle == 0, CHIP_ERROR_BUSY);
         VerifyOrReturnError(mNextEndpoint != chip::kInvalidEndpointId && mNextHandle != 0,
                             CHIP_IM_GLOBAL_STATUS(ResourceExhausted));
@@ -122,8 +130,7 @@ public:
             mEndpoint.reset();
             return error;
         }
-        error = mEndpoint->Signaling().CreateSession(peer, endpoint, Cluster::StreamSelection::ExplicitId(videoStream),
-                                                    Cluster::StreamSelection::Absent(), mNativeHandle);
+        error = mEndpoint->Signaling().CreateSession(peer, endpoint, video, audio, mNativeHandle);
         if (error != CHIP_NO_ERROR)
         {
             LogErrorOnFailure(mEndpoint->Unregister());

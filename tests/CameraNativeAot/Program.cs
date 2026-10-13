@@ -19,9 +19,51 @@ internal static class Program
     private static extern int GetRetainedCameraSession(IntPtr controller, out IntPtr value);
     [DllImport("CameraNativeAotFixture.dll", ExactSpelling = true)]
     private static extern int GetCameraVideoStreamAllocationResult(int variant, out IntPtr value);
+    [DllImport("CameraNativeAotFixture.dll", ExactSpelling = true)]
+    private static extern int GetCameraAudioFixture(int variant, out IntPtr value);
 
     private static async Task Main()
     {
+        var absent = new MatterCameraStreamSelection(MatterCameraStreamSelectionKind.Absent, null);
+        var automatic = new MatterCameraStreamSelection(MatterCameraStreamSelectionKind.AutoSelect, null);
+        var explicitZero = new MatterCameraStreamSelection(MatterCameraStreamSelectionKind.ExplicitId, 0);
+        Require(absent.Kind == MatterCameraStreamSelectionKind.Absent && absent.StreamId is null &&
+            automatic.Kind == MatterCameraStreamSelectionKind.AutoSelect && automatic.StreamId is null &&
+            explicitZero.StreamId == 0, "NativeAOT tagged selections and nullable zero ID");
+        var audioOptions = new MatterCameraAudioStreamOptions { AudioCodec = 0, Channels = 2, SampleRate = 48000, BitRate = 64000, BitDepth = 16 };
+        Require(audioOptions.AudioCodec == 0 && audioOptions.Channels == 2 && audioOptions.SampleRate == 48000 &&
+            audioOptions.BitRate == 64000 && audioOptions.BitDepth == 16, "NativeAOT audio options activation/setters");
+        Marshal.ThrowExceptionForHR(GetCameraAudioFixture(0, out var audioPointer));
+        MatterCameraAudioStream audioStream;
+        try { audioStream = WinRT.MarshalInspectable<MatterCameraAudioStream>.FromAbi(audioPointer); }
+        finally { Marshal.Release(audioPointer); }
+        Require(audioStream.StreamId == 0 && audioStream.IsLiveView && audioStream.AudioCodec == 0 &&
+            audioStream.Channels == 2 && audioStream.SampleRate == 48000 && audioStream.BitRate == 64000 &&
+            audioStream.BitDepth == 16 && audioStream.ReferenceCount == 0, "NativeAOT audio stream numeric fields/count zero");
+        Marshal.ThrowExceptionForHR(GetCameraAudioFixture(1, out audioPointer));
+        MatterCameraAudioCapabilities audioCapabilities;
+        try { audioCapabilities = WinRT.MarshalInspectable<MatterCameraAudioCapabilities>.FromAbi(audioPointer); }
+        finally { Marshal.Release(audioPointer); }
+        Require(audioCapabilities.Microphone.MaximumChannels == 2 &&
+            audioCapabilities.Microphone.Codecs.SequenceEqual(new byte[] { 0, 255 }) &&
+            audioCapabilities.Microphone.SampleRates.SequenceEqual(new uint[] { 16000, 48000 }) &&
+            audioCapabilities.Microphone.BitDepths.SequenceEqual(new byte[] { 16, 24 }) &&
+            audioCapabilities.MicrophoneMuted == false && audioCapabilities.MicrophoneVolume == 20 &&
+            audioCapabilities.Speaker is null && audioCapabilities.SpeakerMuted is null &&
+            audioCapabilities.TwoWayTalkSupport is null && audioCapabilities.MaximumNetworkBandwidth == 128000,
+            "NativeAOT nested audio collections and absent remote controls");
+        for (int variant = 2; variant <= 3; ++variant)
+        {
+            Marshal.ThrowExceptionForHR(GetCameraAudioFixture(variant, out audioPointer));
+            MatterCameraAudioStreamAllocationResult audioResult;
+            try { audioResult = WinRT.MarshalInspectable<MatterCameraAudioStreamAllocationResult>.FromAbi(audioPointer); }
+            finally { Marshal.Release(audioPointer); }
+            Require(variant == 2 ? audioResult.Succeeded && audioResult.Stream.ReferenceCount == 0 && audioResult.Failure is null
+                : !audioResult.Succeeded && audioResult.Stream is null &&
+                  audioResult.Failure.Category == MatterCameraFailureCategory.DynamicConstraintError &&
+                  audioResult.Failure.NativeError == 0x5cf && !audioResult.Failure.Retryable,
+                "NativeAOT typed audio allocation success/rejection");
+        }
         var streamOptions = new MatterCameraVideoStreamOptions();
         Require(streamOptions.MinimumWidth == 640 && streamOptions.MaximumWidth == 640 &&
             streamOptions.MinimumHeight == 480 && streamOptions.MaximumHeight == 480 &&
@@ -223,6 +265,10 @@ internal static class Program
                 }
                 Require(await retainedSession.GetStateAsync() == MatterCameraSessionState.Closed,
                     "A released session reports Closed");
+                Require(retainedSession.RequestedVideoSelection.Kind == MatterCameraStreamSelectionKind.Absent &&
+                    retainedSession.RequestedAudioSelection.Kind == MatterCameraStreamSelectionKind.AutoSelect &&
+                    retainedSession.VideoStreamId is null && retainedSession.AudioStreamId == 0 &&
+                    retainedSession.ProtocolSessionId == 0, "Versioned session metadata preserves requested selections and resolved/protocol zero IDs");
                 var invalidCandidates = await retainedSession.TrySendCandidatesAsync(Array.Empty<MatterCameraIceCandidate>());
                 Require(!invalidCandidates.Succeeded && invalidCandidates.Failure.Stage == MatterCameraStage.Validation &&
                     invalidCandidates.Failure.Category == MatterCameraFailureCategory.InvalidInput,
@@ -236,6 +282,20 @@ internal static class Program
                     invalidDiscovery.Failure.Category == MatterCameraFailureCategory.InvalidInput,
                     "NativeAOT discovery failure is not an empty success");
                 var camera = new MatterControllerCamera(controller);
+                var invalidAudio = await camera.TryAllocateAudioStreamAsync(1, 2, new MatterCameraAudioStreamOptions());
+                Require(!invalidAudio.Succeeded && invalidAudio.Stream is null &&
+                    invalidAudio.Failure.Stage == MatterCameraStage.Validation &&
+                    invalidAudio.Failure.Category == MatterCameraFailureCategory.InvalidInput,
+                    "Versioned audio API does not guess an unnegotiated format");
+                var unownedAudio = await camera.TryDeallocateAudioStreamAsync(1, 2, 0);
+                Require(!unownedAudio.Succeeded && unownedAudio.Failure.Category == MatterCameraFailureCategory.InvalidState &&
+                    unownedAudio.Failure.Stage == MatterCameraStage.StreamDeallocation,
+                    "SDK refuses remote deallocation of externally selected streams");
+                var invalidSelection = await camera.TryStartSessionAsync(1, 2, absent, absent, "v=0\r\n", Array.Empty<MatterCameraIceServer>());
+                Require(!invalidSelection.Succeeded && invalidSelection.Session is null &&
+                    invalidSelection.Failure.Stage == MatterCameraStage.Validation &&
+                    invalidSelection.Failure.Category == MatterCameraFailureCategory.InvalidInput,
+                    "New session API rejects both media absent before dispatch");
                 bool invalidPrivacyRejected = false;
                 try
                 {

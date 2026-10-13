@@ -32,6 +32,12 @@
 #include "MatterCameraVideoStream.g.h"
 #include "MatterCameraVideoStreamOptions.g.h"
 #include "MatterCameraVideoStreamAllocationResult.g.h"
+#include "MatterCameraAudioStream.g.h"
+#include "MatterCameraAudioStreamOptions.g.h"
+#include "MatterCameraAudioStreamAllocationResult.g.h"
+#include "MatterCameraAudioCapabilities.g.h"
+#include "MatterCameraAudioFormatCapabilities.g.h"
+#include "MatterCameraStreamSelection.g.h"
 #include "MatterCameraFailure.g.h"
 #include "MatterCameraStartResult.g.h"
 #include "MatterCameraOperationResult.g.h"
@@ -485,6 +491,13 @@ struct MatterCameraSession : MatterCameraSessionT<MatterCameraSession>
     uint64_t NodeId() const { return mNode; }
     uint16_t CameraEndpointId() const { return mEndpoint; }
     uint16_t RequestorEndpointId() const { return mRequestor; }
+    Controller::MatterCameraStreamSelection RequestedVideoSelection() const { return mVideo; }
+    Controller::MatterCameraStreamSelection RequestedAudioSelection() const { return mAudio; }
+    Windows::Foundation::IReference<uint16_t> VideoStreamId() const { return mVideoId; }
+    Windows::Foundation::IReference<uint16_t> AudioStreamId() const { return mAudioId; }
+    Windows::Foundation::IReference<uint16_t> ProtocolSessionId() const { return mProtocolId; }
+    void SetMediaMetadata(Controller::MatterCameraStreamSelection const & video, Controller::MatterCameraStreamSelection const & audio,
+        std::optional<uint16_t> videoId, std::optional<uint16_t> audioId, std::optional<uint16_t> protocolId);
     Windows::Foundation::IAsyncOperation<Controller::MatterCameraSessionState> GetStateAsync();
     Windows::Foundation::IAsyncOperation<Controller::MatterCameraSignal> WaitForSignalAsync(uint32_t timeoutMilliseconds);
     Windows::Foundation::IAsyncAction SendCandidatesAsync(
@@ -499,6 +512,8 @@ private:
     uint64_t mNode;
     uint16_t mEndpoint;
     uint16_t mRequestor;
+    Controller::MatterCameraStreamSelection mVideo{ nullptr }, mAudio{ nullptr };
+    Windows::Foundation::IReference<uint16_t> mVideoId{ nullptr }, mAudioId{ nullptr }, mProtocolId{ nullptr };
     std::atomic_bool mWaiting{ false };
     std::atomic_uint32_t mClosing{ 0 };
 };
@@ -546,6 +561,29 @@ struct MatterControllerCamera : MatterControllerCameraT<MatterControllerCamera>
     Windows::Foundation::IAsyncAction DeallocateVideoStreamAsync(uint64_t nodeId, uint16_t endpointId, uint16_t videoStreamId);
     Windows::Foundation::IAsyncOperation<Controller::MatterCameraOperationResult> TryDeallocateVideoStreamAsync(
         uint64_t nodeId, uint16_t endpointId, uint16_t videoStreamId);
+    Windows::Foundation::IAsyncOperation<Controller::MatterCameraAudioCapabilities> ReadAudioCapabilitiesAsync(
+        uint64_t nodeId, uint16_t endpointId);
+    Windows::Foundation::IAsyncOperation<Windows::Foundation::Collections::IVectorView<Controller::MatterCameraAudioStream>>
+        ReadAllocatedAudioStreamsAsync(uint64_t nodeId, uint16_t endpointId);
+    Windows::Foundation::IAsyncOperation<Controller::MatterCameraAudioStream> AllocateAudioStreamAsync(
+        uint64_t nodeId, uint16_t endpointId, Controller::MatterCameraAudioStreamOptions options);
+    Windows::Foundation::IAsyncOperation<Controller::MatterCameraAudioStreamAllocationResult> TryAllocateAudioStreamAsync(
+        uint64_t nodeId, uint16_t endpointId, Controller::MatterCameraAudioStreamOptions options);
+    Windows::Foundation::IAsyncAction DeallocateAudioStreamAsync(uint64_t nodeId, uint16_t endpointId, uint16_t streamId);
+    Windows::Foundation::IAsyncOperation<Controller::MatterCameraOperationResult> TryDeallocateAudioStreamAsync(
+        uint64_t nodeId, uint16_t endpointId, uint16_t streamId);
+    Windows::Foundation::IAsyncOperation<Controller::MatterCameraSession> StartSessionAsync(
+        uint64_t nodeId, uint16_t endpointId, Controller::MatterCameraStreamSelection video,
+        Controller::MatterCameraStreamSelection audio, hstring offer,
+        Windows::Foundation::Collections::IVectorView<Controller::MatterCameraIceServer> servers);
+    Windows::Foundation::IAsyncOperation<Controller::MatterCameraStartResult> TryStartSessionAsync(
+        uint64_t nodeId, uint16_t endpointId, Controller::MatterCameraStreamSelection video,
+        Controller::MatterCameraStreamSelection audio, hstring offer,
+        Windows::Foundation::Collections::IVectorView<Controller::MatterCameraIceServer> servers);
+    Windows::Foundation::IAsyncAction WriteMicrophoneMuteAsync(uint64_t nodeId, uint16_t endpointId, bool muted);
+    Windows::Foundation::IAsyncAction WriteSpeakerMuteAsync(uint64_t nodeId, uint16_t endpointId, bool muted);
+    Windows::Foundation::IAsyncAction WriteMicrophoneVolumeAsync(uint64_t nodeId, uint16_t endpointId, uint8_t level);
+    Windows::Foundation::IAsyncAction WriteSpeakerVolumeAsync(uint64_t nodeId, uint16_t endpointId, uint8_t level);
 private:
     std::shared_ptr<ControllerRuntime> mRuntime;
 };
@@ -577,6 +615,106 @@ struct MatterCameraVideoStreamOptions : MatterCameraVideoStreamOptionsT<MatterCa
         Controller::MatterCameraVideoStream const & stream);
 private:
     chip::app::Clusters::CameraAvStreamManagement::Commands::VideoStreamAllocate::Type mRequest;
+};
+
+struct MatterCameraStreamSelection : MatterCameraStreamSelectionT<MatterCameraStreamSelection>
+{
+    MatterCameraStreamSelection(Controller::MatterCameraStreamSelectionKind kind, Windows::Foundation::IReference<uint16_t> id);
+    Controller::MatterCameraStreamSelectionKind Kind() const { return mKind; }
+    Windows::Foundation::IReference<uint16_t> StreamId() const { return mId; }
+private:
+    Controller::MatterCameraStreamSelectionKind mKind;
+    Windows::Foundation::IReference<uint16_t> mId{ nullptr };
+};
+
+struct MatterCameraAudioFormatCapabilities : MatterCameraAudioFormatCapabilitiesT<MatterCameraAudioFormatCapabilities>
+{
+    explicit MatterCameraAudioFormatCapabilities(Windows::Foundation::Collections::IPropertySet const & fields);
+    uint8_t MaximumChannels() const { return mChannels; }
+    Windows::Foundation::Collections::IVectorView<uint8_t> Codecs() const { return mCodecs; }
+    Windows::Foundation::Collections::IVectorView<uint32_t> SampleRates() const { return mRates; }
+    Windows::Foundation::Collections::IVectorView<uint8_t> BitDepths() const { return mDepths; }
+    void Validate(chip::app::Clusters::CameraAvStreamManagement::Commands::AudioStreamAllocate::Type const & request) const;
+private:
+    uint8_t mChannels;
+    Windows::Foundation::Collections::IVectorView<uint8_t> mCodecs;
+    Windows::Foundation::Collections::IVectorView<uint32_t> mRates;
+    Windows::Foundation::Collections::IVectorView<uint8_t> mDepths;
+};
+
+struct MatterCameraAudioCapabilities : MatterCameraAudioCapabilitiesT<MatterCameraAudioCapabilities>
+{
+    Controller::MatterCameraCapabilities mCamera{ nullptr };
+    Controller::MatterCameraAudioFormatCapabilities mMicrophone{ nullptr }, mSpeaker{ nullptr };
+    Windows::Foundation::IReference<uint8_t> mTalk{ nullptr };
+    Windows::Foundation::IReference<bool> mMicrophoneMuted{ nullptr }, mSpeakerMuted{ nullptr };
+    Windows::Foundation::IReference<uint8_t> mMicrophoneVolume{ nullptr }, mMicrophoneMin{ nullptr }, mMicrophoneMax{ nullptr };
+    Windows::Foundation::IReference<uint8_t> mSpeakerVolume{ nullptr }, mSpeakerMin{ nullptr }, mSpeakerMax{ nullptr };
+    bool mPrivacy = false;
+    uint32_t mBandwidth = 0;
+    Controller::MatterCameraCapabilities Camera() const { return mCamera; }
+    Controller::MatterCameraAudioFormatCapabilities Microphone() const { return mMicrophone; }
+    Controller::MatterCameraAudioFormatCapabilities Speaker() const { return mSpeaker; }
+    Windows::Foundation::IReference<uint8_t> TwoWayTalkSupport() const { return mTalk; }
+    Windows::Foundation::IReference<bool> MicrophoneMuted() const { return mMicrophoneMuted; }
+    Windows::Foundation::IReference<bool> SpeakerMuted() const { return mSpeakerMuted; }
+    Windows::Foundation::IReference<uint8_t> MicrophoneVolume() const { return mMicrophoneVolume; }
+    Windows::Foundation::IReference<uint8_t> MicrophoneMinimumVolume() const { return mMicrophoneMin; }
+    Windows::Foundation::IReference<uint8_t> MicrophoneMaximumVolume() const { return mMicrophoneMax; }
+    Windows::Foundation::IReference<uint8_t> SpeakerVolume() const { return mSpeakerVolume; }
+    Windows::Foundation::IReference<uint8_t> SpeakerMinimumVolume() const { return mSpeakerMin; }
+    Windows::Foundation::IReference<uint8_t> SpeakerMaximumVolume() const { return mSpeakerMax; }
+    bool PrivacyEnabled() const { return mPrivacy; }
+    uint32_t MaximumNetworkBandwidth() const { return mBandwidth; }
+    bool SupportsListening() const;
+};
+
+struct MatterCameraAudioStream : MatterCameraAudioStreamT<MatterCameraAudioStream>
+{
+    explicit MatterCameraAudioStream(Windows::Foundation::Collections::IPropertySet const & fields);
+    uint16_t StreamId() const { return mStream.audioStreamID; }
+    uint8_t StreamUsage() const { return static_cast<uint8_t>(mStream.streamUsage); }
+    bool IsLiveView() const { return mStream.streamUsage == chip::app::Clusters::Globals::StreamUsageEnum::kLiveView; }
+    uint8_t AudioCodec() const { return static_cast<uint8_t>(mStream.audioCodec); }
+    uint8_t Channels() const { return mStream.channelCount; }
+    uint32_t SampleRate() const { return mStream.sampleRate; }
+    uint32_t BitRate() const { return mStream.bitRate; }
+    uint8_t BitDepth() const { return mStream.bitDepth; }
+    uint8_t ReferenceCount() const { return mStream.referenceCount; }
+private:
+    chip::app::Clusters::CameraAvStreamManagement::Structs::AudioStreamStruct::Type mStream;
+};
+
+struct MatterCameraAudioStreamOptions : MatterCameraAudioStreamOptionsT<MatterCameraAudioStreamOptions>
+{
+    MatterCameraAudioStreamOptions();
+    uint8_t AudioCodec() const { return static_cast<uint8_t>(mRequest.audioCodec); }
+    void AudioCodec(uint8_t value) { mRequest.audioCodec = static_cast<chip::app::Clusters::CameraAvStreamManagement::AudioCodecEnum>(value); }
+    uint8_t Channels() const { return mRequest.channelCount; }
+    void Channels(uint8_t value) { mRequest.channelCount = value; }
+    uint32_t SampleRate() const { return mRequest.sampleRate; }
+    void SampleRate(uint32_t value) { mRequest.sampleRate = value; }
+    uint32_t BitRate() const { return mRequest.bitRate; }
+    void BitRate(uint32_t value) { mRequest.bitRate = value; }
+    uint8_t BitDepth() const { return mRequest.bitDepth; }
+    void BitDepth(uint8_t value) { mRequest.bitDepth = value; }
+    chip::app::Clusters::CameraAvStreamManagement::Commands::AudioStreamAllocate::Type Snapshot() const;
+    static void ValidateAllocated(chip::app::Clusters::CameraAvStreamManagement::Commands::AudioStreamAllocate::Type const & request,
+                                  Controller::MatterCameraAudioStream const & stream);
+private:
+    chip::app::Clusters::CameraAvStreamManagement::Commands::AudioStreamAllocate::Type mRequest;
+};
+
+struct MatterCameraAudioStreamAllocationResult : MatterCameraAudioStreamAllocationResultT<MatterCameraAudioStreamAllocationResult>
+{
+    explicit MatterCameraAudioStreamAllocationResult(Controller::MatterCameraAudioStream stream) : mStream(std::move(stream)) {}
+    explicit MatterCameraAudioStreamAllocationResult(Controller::MatterCameraFailure failure) : mFailure(std::move(failure)) {}
+    bool Succeeded() const { return mStream != nullptr; }
+    Controller::MatterCameraAudioStream Stream() const { return mStream; }
+    Controller::MatterCameraFailure Failure() const { return mFailure; }
+private:
+    Controller::MatterCameraAudioStream mStream{ nullptr };
+    Controller::MatterCameraFailure mFailure{ nullptr };
 };
 
 struct MatterCameraVideoStreamAllocationResult :
@@ -820,6 +958,10 @@ struct MatterControllerCameraDiscovery :
 struct MatterControllerCamera : MatterControllerCameraT<MatterControllerCamera, implementation::MatterControllerCamera> {};
 struct MatterCameraVideoStreamOptions :
     MatterCameraVideoStreamOptionsT<MatterCameraVideoStreamOptions, implementation::MatterCameraVideoStreamOptions> {};
+struct MatterCameraAudioStreamOptions :
+    MatterCameraAudioStreamOptionsT<MatterCameraAudioStreamOptions, implementation::MatterCameraAudioStreamOptions> {};
+struct MatterCameraStreamSelection :
+    MatterCameraStreamSelectionT<MatterCameraStreamSelection, implementation::MatterCameraStreamSelection> {};
 struct MatterCameraIceCandidate : MatterCameraIceCandidateT<MatterCameraIceCandidate, implementation::MatterCameraIceCandidate> {};
 struct MatterCameraIceServer : MatterCameraIceServerT<MatterCameraIceServer, implementation::MatterCameraIceServer> {};
 struct MatterControllerNetworkCommissioning :

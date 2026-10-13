@@ -24,8 +24,28 @@ attribute/command lists. Video start requires advertised video and the complete
 client-offer command path, not a manufacturer name or assumed endpoint.
 Video-only start omits AudioStreamID; protocol null would request automatic
 audio selection. Camera-signaling development builds require the matching
-native media-selection implementation. Typed audio allocation, listening and
-talkback remain unimplemented; this package does not activate microphone capture.
+native media-selection implementation. Additive `IMatterControllerCamera3`
+provides typed audio capabilities, allocated-stream metadata, LiveView
+allocation/release, explicit video/audio selection and remote microphone/speaker
+mute/volume writes. It requires Camera device type 0x0142 (revision 1-2), stream
+management/provider revision 2 and the camera provider/requestor composition.
+Non-camera and incompatible endpoints remain unsupported.
+Audio options have no usable default: first intersect the actual media engine's
+formats with advertised codecs/channels/sample rates/bit depths. ReferenceCount
+zero is valid. Only this controller's successful audio allocation grants release
+ownership; external or automatically selected streams are never deallocated.
+Unknown allocation or release outcomes block further allocation on that endpoint,
+and releases are dispatched at most once. No retries or privacy changes are made.
+Remote volume uses advertised bounds and never unmutes. Remote camera controls
+are not local playback/capture controls.
+`StartSessionAsync` and its Try counterpart distinguish Absent (omitted),
+AutoSelect (protocol null), and ExplicitId (numeric, including zero) independently
+for each medium. `IMatterCameraSession2` retains requested selections and resolved
+nullable media/protocol IDs without changing the existing session interface.
+Close local media and signaling before releasing owned streams, and finish
+cleanup before controller shutdown. Listening/talkback media-engine integration,
+profile negotiation and physical sound acceptance remain pending; this package
+does not activate microphone capture or claim bidirectional interoperability.
 `AllocateVideoStreamAsync` and `TryAllocateVideoStreamAsync` request a typed
 H.264 LiveView stream with configurable, validated bounds. Options default to
 640x480, 30 fps, 500000-2000000 bits per second, and a 1000 ms key-frame interval.

@@ -126,10 +126,80 @@ Existing video-only start APIs now omit AudioStreamID using the native tagged
 selection API. Present protocol null requests automatic audio selection and is
 not used as a substitute for no audio. This camera preview requires the matching
 native SDK media-selection implementation when built with signaling enabled;
-it does not yet expose listening, talkback, or typed audio allocation.
+typed audio protocol APIs are described below. A separate media engine is still
+required for listening or talkback; the SDK never activates a microphone.
 `ReadCapabilitiesAsync` exposes the endpoint Descriptor and both camera clusters'
 revisions, raw feature maps, attribute IDs, and accepted/generated command IDs
 through typed collections. Unknown feature bits stay intact.
+
+### Typed camera audio protocol development
+
+`IMatterControllerCamera3` adds audio capability/readback, allocation/release,
+explicit-media session start, and remote microphone/speaker mute/volume APIs.
+Existing camera interfaces and their video-only audio omission are preserved.
+This is a **camera-specific protocol adapter**, not a universal microphone or
+speaker API. Its new operations require Camera device type `0x0142` at revision
+1 or 2, Camera AV Stream Management and WebRTC Transport Provider servers at
+the current generated revision 2, and a WebRTC Transport Requestor client.
+Other device types, future revisions, missing features and missing commands
+fail explicitly before allocation or signaling. Legacy discovery still reports
+cluster composition, and is not sufficient authorization for this audio adapter.
+
+`ReadAudioCapabilitiesAsync` returns raw microphone/speaker codec, channel,
+sample-rate and bit-depth lists, nullable advertised remote mute/volume bounds
+and TwoWayTalkSupport, camera cluster metadata, privacy and network bandwidth.
+Missing optional controls remain null; unknown codec/talk values are preserved.
+`SupportsListening` identifies the candidate audio protocol path with a known
+codec, **not media-engine compatibility or audible playback**. Intersect these
+formats with the actual media engine before allocating; TwoWayTalkSupport alone
+does not establish bidirectional audio or authorize microphone capture.
+
+`MatterCameraAudioStreamOptions` deliberately has no usable default profile.
+Supply a negotiated Opus or AAC-LC codec, 1-8 channels, nonzero sample rate and
+bitrate, and 8/16/24/32 bit depth. Allocation verifies the advertised microphone
+format, LiveView usage, bandwidth, privacy, response ID and exact readback
+metadata. Readback preserves transport ReferenceCount, including zero.
+The throwing and Try allocation methods use the same owned-ID rollback and
+cancellation cleanup as video. There are no automatic allocation retries.
+
+Audio ownership is shared by camera wrappers on the same controller and scoped
+by node/endpoint/returned ID. One audio allocation may be pending or owned per
+endpoint, with at most eight tracked endpoints per controller. Known correlated
+refusals release the pending slot; an unknown outcome or failed deallocation
+blocks another allocation on that endpoint. Metadata reads, explicit selection
+and automatic selection do **not** acquire cleanup ownership. Audio release
+rejects unowned, wrong-peer/endpoint and already-attempted IDs without dispatch.
+Stop local media, close the signaling session, and call
+`DeallocateAudioStreamAsync` or `TryDeallocateAudioStreamAsync` exactly once for
+an allocation created by this controller. Finish this cleanup before closing the
+controller. Do not reopen a controller to work around uncertain remote ownership.
+
+`StartSessionAsync`/`TryStartSessionAsync` require two immutable
+`MatterCameraStreamSelection` objects: Absent omits the protocol field,
+AutoSelect sends protocol null, and ExplicitId sends the nonreserved numeric ID
+(including zero). Both absent is invalid. Provide a bounded SDP offer and an
+explicit collection of zero to four ICE servers. Selected LiveView formats,
+capabilities and privacy are checked before signaling and after the response;
+failed validation closes the owned session, never externally selected streams.
+`IMatterCameraSession2` preserves requested selections separately from nullable
+resolved video/audio IDs and the protocol ID, including protocol ID zero and
+metadata after close. Canceling startup also closes a late-created session.
+
+Remote mute/volume writes require the corresponding advertised camera feature,
+format and attribute. Volumes use the device's ordered min/max bounds, not a
+universal percentage; writing volume never unmutes. Privacy prevents unmuting.
+These controls are distinct from local output mute, local capture mute and
+microphone permission. They never change camera privacy.
+
+This stage adds protocol and ownership APIs only. The receiver remains
+video-only; receive-only playback, permission-gated talkback, media-engine
+profile negotiation and physical audibility acceptance are not implemented or
+claimed by this stage. The current normative specification is unavailable;
+the revision gate is based on checked-in generated definitions/server behavior,
+not a certification claim.
+
+### Video allocation and signaling compatibility
+
 `SupportsClientOffer` requires the video feature and the complete advertised
 offer, response, ICE, and End command path; it does not claim media compatibility
 or certification of the reported revision. Start refreshes these capabilities

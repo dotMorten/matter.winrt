@@ -257,17 +257,31 @@ namespace Matter.Windows.Controller
 
     runtimeclass MatterCameraSession
     {
-        UInt64 Handle { get; };
-        UInt64 NodeId { get; };
-        UInt16 CameraEndpointId { get; };
-        UInt16 RequestorEndpointId { get; };
-        Windows.Foundation.IAsyncOperation<MatterCameraSessionState> GetStateAsync();
-        Windows.Foundation.IAsyncOperation<MatterCameraSignal> WaitForSignalAsync(UInt32 timeoutMilliseconds);
-        Windows.Foundation.IAsyncAction SendCandidatesAsync(Windows.Foundation.Collections.IVectorView<MatterCameraIceCandidate> candidates);
-        Windows.Foundation.IAsyncOperation<MatterCameraOperationResult> TrySendCandidatesAsync(
-            Windows.Foundation.Collections.IVectorView<MatterCameraIceCandidate> candidates);
-        Windows.Foundation.IAsyncAction CloseAsync();
-        Windows.Foundation.IAsyncOperation<MatterCameraOperationResult> TryCloseAsync();
+        [default]
+        [version(1)]
+        [interface_name("Matter.Windows.Controller.IMatterCameraSession", 3A3B3837-A5D5-571E-9E66-ADD67366BDBB)]
+        {
+            UInt64 Handle { get; };
+            UInt64 NodeId { get; };
+            UInt16 CameraEndpointId { get; };
+            UInt16 RequestorEndpointId { get; };
+            Windows.Foundation.IAsyncOperation<MatterCameraSessionState> GetStateAsync();
+            Windows.Foundation.IAsyncOperation<MatterCameraSignal> WaitForSignalAsync(UInt32 timeoutMilliseconds);
+            Windows.Foundation.IAsyncAction SendCandidatesAsync(Windows.Foundation.Collections.IVectorView<MatterCameraIceCandidate> candidates);
+            Windows.Foundation.IAsyncOperation<MatterCameraOperationResult> TrySendCandidatesAsync(
+                Windows.Foundation.Collections.IVectorView<MatterCameraIceCandidate> candidates);
+            Windows.Foundation.IAsyncAction CloseAsync();
+            Windows.Foundation.IAsyncOperation<MatterCameraOperationResult> TryCloseAsync();
+        }
+        [version(2)]
+        [interface_name("Matter.Windows.Controller.IMatterCameraSession2")]
+        {
+            MatterCameraStreamSelection RequestedVideoSelection { get; };
+            MatterCameraStreamSelection RequestedAudioSelection { get; };
+            Windows.Foundation.IReference<UInt16> VideoStreamId { get; };
+            Windows.Foundation.IReference<UInt16> AudioStreamId { get; };
+            Windows.Foundation.IReference<UInt16> ProtocolSessionId { get; };
+        }
     };
 
     enum MatterCameraSessionState
@@ -310,6 +324,101 @@ namespace Matter.Windows.Controller
             Windows.Foundation.IAsyncOperation<MatterCameraOperationResult> TryDeallocateVideoStreamAsync(
                 UInt64 nodeId, UInt16 endpointId, UInt16 videoStreamId);
         }
+        [version(3)]
+        [interface_name("Matter.Windows.Controller.IMatterControllerCamera3")]
+        {
+            Windows.Foundation.IAsyncOperation<MatterCameraAudioCapabilities> ReadAudioCapabilitiesAsync(UInt64 nodeId, UInt16 endpointId);
+            Windows.Foundation.IAsyncOperation<Windows.Foundation.Collections.IVectorView<MatterCameraAudioStream> >
+                ReadAllocatedAudioStreamsAsync(UInt64 nodeId, UInt16 endpointId);
+            Windows.Foundation.IAsyncOperation<MatterCameraAudioStream> AllocateAudioStreamAsync(
+                UInt64 nodeId, UInt16 endpointId, MatterCameraAudioStreamOptions options);
+            Windows.Foundation.IAsyncOperation<MatterCameraAudioStreamAllocationResult> TryAllocateAudioStreamAsync(
+                UInt64 nodeId, UInt16 endpointId, MatterCameraAudioStreamOptions options);
+            Windows.Foundation.IAsyncAction DeallocateAudioStreamAsync(UInt64 nodeId, UInt16 endpointId, UInt16 audioStreamId);
+            Windows.Foundation.IAsyncOperation<MatterCameraOperationResult> TryDeallocateAudioStreamAsync(
+                UInt64 nodeId, UInt16 endpointId, UInt16 audioStreamId);
+            Windows.Foundation.IAsyncOperation<MatterCameraSession> StartSessionAsync(
+                UInt64 nodeId, UInt16 endpointId, MatterCameraStreamSelection video, MatterCameraStreamSelection audio,
+                String offerSdp, Windows.Foundation.Collections.IVectorView<MatterCameraIceServer> iceServers);
+            Windows.Foundation.IAsyncOperation<MatterCameraStartResult> TryStartSessionAsync(
+                UInt64 nodeId, UInt16 endpointId, MatterCameraStreamSelection video, MatterCameraStreamSelection audio,
+                String offerSdp, Windows.Foundation.Collections.IVectorView<MatterCameraIceServer> iceServers);
+            Windows.Foundation.IAsyncAction WriteMicrophoneMuteAsync(UInt64 nodeId, UInt16 endpointId, Boolean muted);
+            Windows.Foundation.IAsyncAction WriteSpeakerMuteAsync(UInt64 nodeId, UInt16 endpointId, Boolean muted);
+            Windows.Foundation.IAsyncAction WriteMicrophoneVolumeAsync(UInt64 nodeId, UInt16 endpointId, UInt8 level);
+            Windows.Foundation.IAsyncAction WriteSpeakerVolumeAsync(UInt64 nodeId, UInt16 endpointId, UInt8 level);
+        }
+    };
+
+    enum MatterCameraStreamSelectionKind
+    {
+        Absent = 0,
+        AutoSelect = 1,
+        ExplicitId = 2
+    };
+
+    runtimeclass MatterCameraStreamSelection
+    {
+        MatterCameraStreamSelection(MatterCameraStreamSelectionKind kind, Windows.Foundation.IReference<UInt16> streamId);
+        MatterCameraStreamSelectionKind Kind { get; };
+        Windows.Foundation.IReference<UInt16> StreamId { get; };
+    };
+
+    runtimeclass MatterCameraAudioFormatCapabilities
+    {
+        UInt8 MaximumChannels { get; };
+        Windows.Foundation.Collections.IVectorView<UInt8> Codecs { get; };
+        Windows.Foundation.Collections.IVectorView<UInt32> SampleRates { get; };
+        Windows.Foundation.Collections.IVectorView<UInt8> BitDepths { get; };
+    };
+
+    runtimeclass MatterCameraAudioCapabilities
+    {
+        MatterCameraCapabilities Camera { get; };
+        MatterCameraAudioFormatCapabilities Microphone { get; };
+        MatterCameraAudioFormatCapabilities Speaker { get; };
+        Windows.Foundation.IReference<UInt8> TwoWayTalkSupport { get; };
+        Windows.Foundation.IReference<Boolean> MicrophoneMuted { get; };
+        Windows.Foundation.IReference<Boolean> SpeakerMuted { get; };
+        Windows.Foundation.IReference<UInt8> MicrophoneVolume { get; };
+        Windows.Foundation.IReference<UInt8> MicrophoneMinimumVolume { get; };
+        Windows.Foundation.IReference<UInt8> MicrophoneMaximumVolume { get; };
+        Windows.Foundation.IReference<UInt8> SpeakerVolume { get; };
+        Windows.Foundation.IReference<UInt8> SpeakerMinimumVolume { get; };
+        Windows.Foundation.IReference<UInt8> SpeakerMaximumVolume { get; };
+        Boolean PrivacyEnabled { get; };
+        UInt32 MaximumNetworkBandwidth { get; };
+        Boolean SupportsListening { get; };
+    };
+
+    runtimeclass MatterCameraAudioStream
+    {
+        UInt16 StreamId { get; };
+        UInt8 StreamUsage { get; };
+        Boolean IsLiveView { get; };
+        UInt8 AudioCodec { get; };
+        UInt8 Channels { get; };
+        UInt32 SampleRate { get; };
+        UInt32 BitRate { get; };
+        UInt8 BitDepth { get; };
+        UInt8 ReferenceCount { get; };
+    };
+
+    runtimeclass MatterCameraAudioStreamOptions
+    {
+        MatterCameraAudioStreamOptions();
+        UInt8 AudioCodec { get; set; };
+        UInt8 Channels { get; set; };
+        UInt32 SampleRate { get; set; };
+        UInt32 BitRate { get; set; };
+        UInt8 BitDepth { get; set; };
+    };
+
+    runtimeclass MatterCameraAudioStreamAllocationResult
+    {
+        Boolean Succeeded { get; };
+        MatterCameraAudioStream Stream { get; };
+        MatterCameraFailure Failure { get; };
     };
 
     runtimeclass MatterCameraVideoStreamOptions

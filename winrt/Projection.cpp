@@ -1,5 +1,6 @@
 #include "ProjectionTypes.h"
 #include "CameraVideoStreamAllocation.h"
+#include "CameraAudioAllocationOwnership.h"
 
 #include <app-common/zap-generated/cluster-objects.h>
 #include <app/CommandSender.h>
@@ -1593,6 +1594,37 @@ public:
         std::shared_ptr<std::atomic_bool> const & canceled,
         std::vector<Controller::MatterCameraIceServer> const & iceServers)
     {
+        auto video = winrt::make<implementation::MatterCameraStreamSelection>(
+            Controller::MatterCameraStreamSelectionKind::ExplicitId, box_value(stream).as<Windows::Foundation::IReference<uint16_t>>());
+        auto audio = winrt::make<implementation::MatterCameraStreamSelection>(
+            Controller::MatterCameraStreamSelectionKind::Absent, nullptr);
+        return StartCamera(nodeId, endpoint, video, audio, std::move(sdp), canceled, iceServers);
+    }
+
+    CameraAudioAllocationOwnership & AudioOwnership() { return mAudioOwnership; }
+
+    std::pair<std::optional<uint16_t>, std::optional<uint16_t>> SelectedCameraStreams(uint64_t handle)
+    {
+#if CHIP_CONTROLLER_BUILD_WEBRTC_SIGNALING
+        std::scoped_lock operationLock(mOperationMutex);
+        EnsureOpen();
+        CameraStackLock lock;
+        CameraControllerRuntime::Cluster::SessionInfo info;
+        CheckChipError(mCameraHost->GetSessionInfo(handle, info), L"Read selected camera streams");
+        auto id = [](auto const & field) -> std::optional<uint16_t> {
+            return field.IsNull() ? std::nullopt : std::optional<uint16_t>(field.Value());
+        };
+        return { id(info.metadata.videoStreamID), id(info.metadata.audioStreamID) };
+#else
+        throw hresult_not_implemented(L"Camera signaling is not compiled into this component.");
+#endif
+    }
+
+    Controller::MatterCameraSession StartCamera(uint64_t nodeId, uint16_t endpoint,
+        Controller::MatterCameraStreamSelection const & video, Controller::MatterCameraStreamSelection const & audio,
+        std::string sdp, std::shared_ptr<std::atomic_bool> const & canceled,
+        std::vector<Controller::MatterCameraIceServer> const & iceServers)
+    {
 #if CHIP_CONTROLLER_BUILD_WEBRTC_SIGNALING
         std::scoped_lock operationLock(mOperationMutex);
         EnsureOpen();
@@ -1635,8 +1667,19 @@ public:
             {
                 throw hresult_illegal_method_call(L"The native controller system state is unavailable.");
             }
+            auto selection = [](Controller::MatterCameraStreamSelection const & source) {
+                using Selection = CameraControllerRuntime::Cluster::StreamSelection;
+                switch (source.Kind())
+                {
+                case Controller::MatterCameraStreamSelectionKind::Absent: return Selection::Absent();
+                case Controller::MatterCameraStreamSelectionKind::AutoSelect: return Selection::AutoSelect();
+                case Controller::MatterCameraStreamSelectionKind::ExplicitId: return Selection::ExplicitId(source.StreamId().Value());
+                default: throw hresult_invalid_argument(L"Unknown camera media selection.");
+                }
+            };
             CheckChipError(mCameraHost->Create(*systemState->Fabrics(), *systemState->CASESessionMgr(), *systemState->SystemLayer(),
-                ScopedNodeId(nodeId, mCommissioner.GetFabricIndex()), endpoint, stream, handle), L"Create camera session");
+                ScopedNodeId(nodeId, mCommissioner.GetFabricIndex()), endpoint, selection(video), selection(audio), handle),
+                L"Create camera session");
             requestor = mCameraHost->RequestorEndpoint();
         }
         CHIP_ERROR error = mCameraHost->Send(mCommissioner, handle, CameraControllerRuntime::Client::Command::Offer,
@@ -1657,7 +1700,25 @@ public:
             }
             ThrowChipError(error, L"Send camera offer");
         }
-        return winrt::make<implementation::MatterCameraSession>(shared_from_this(), handle, nodeId, endpoint, requestor);
+        try
+        {
+            CameraStackLock lock;
+            CameraControllerRuntime::Cluster::SessionInfo info;
+            CheckChipError(mCameraHost->GetSessionInfo(handle, info), L"Read camera session metadata");
+            auto id = [](auto const & value) -> std::optional<uint16_t> {
+                return value.IsNull() ? std::nullopt : std::optional<uint16_t>(value.Value());
+            };
+            auto session = winrt::make_self<implementation::MatterCameraSession>(shared_from_this(), handle, nodeId, endpoint, requestor);
+            session->SetMediaMetadata(video, audio, id(info.metadata.videoStreamID), id(info.metadata.audioStreamID), info.protocolId);
+            return *session;
+        }
+        catch (...)
+        {
+            LogErrorOnFailure(mCameraHost->Send(mCommissioner, handle, CameraControllerRuntime::Client::Command::End, {}, {}, {}));
+            CameraStackLock lock;
+            LogErrorOnFailure(mCameraHost->CloseLocal(handle));
+            throw;
+        }
 #else
         throw hresult_not_implemented(L"Camera signaling is not compiled into this component.");
 #endif
@@ -2230,6 +2291,7 @@ private:
 
     std::mutex mMutex;
     std::mutex mOperationMutex;
+    CameraAudioAllocationOwnership mAudioOwnership;
     hstring mStoragePath;
     uint64_t mControllerNodeId;
     uint32_t mBluetoothAdapterId;
@@ -3339,7 +3401,7 @@ Value CameraStreamField(Windows::Foundation::Collections::IPropertySet const & f
 {
     if (!fields || !fields.HasKey(key))
     {
-        throw hresult_error(E_BOUNDS, L"An allocated video stream is missing a required field.");
+        throw hresult_error(E_BOUNDS, L"Camera stream metadata is missing a required field.");
     }
     return DescriptorUnsigned<Value>(fields.Lookup(key));
 }
@@ -3473,6 +3535,101 @@ Controller::MatterCameraVideoStream FindAllocatedLiveViewStream(
 }
 
 } // namespace
+
+MatterCameraStreamSelection::MatterCameraStreamSelection(Controller::MatterCameraStreamSelectionKind kind,
+    Windows::Foundation::IReference<uint16_t> id) : mKind(kind), mId(id)
+{
+    using Kind = Controller::MatterCameraStreamSelectionKind;
+    if ((kind != Kind::Absent && kind != Kind::AutoSelect && kind != Kind::ExplicitId) ||
+        (kind == Kind::ExplicitId ? (!id || id.Value() == UINT16_MAX) : bool(id)))
+    {
+        throw hresult_invalid_argument(L"Only ExplicitId requires a nonreserved stream ID; Absent and AutoSelect require null.");
+    }
+}
+
+MatterCameraAudioStreamOptions::MatterCameraAudioStreamOptions()
+{
+    mRequest.streamUsage = chip::app::Clusters::Globals::StreamUsageEnum::kLiveView;
+    mRequest.audioCodec = chip::app::Clusters::CameraAvStreamManagement::AudioCodecEnum::kUnknownEnumValue;
+}
+
+chip::app::Clusters::CameraAvStreamManagement::Commands::AudioStreamAllocate::Type
+MatterCameraAudioStreamOptions::Snapshot() const
+{
+    using Codec = chip::app::Clusters::CameraAvStreamManagement::AudioCodecEnum;
+    if ((mRequest.audioCodec != Codec::kOpus && mRequest.audioCodec != Codec::kAacLc) ||
+        mRequest.channelCount == 0 || mRequest.channelCount > 8 || mRequest.sampleRate == 0 || mRequest.bitRate == 0 ||
+        (mRequest.bitDepth != 8 && mRequest.bitDepth != 16 && mRequest.bitDepth != 24 && mRequest.bitDepth != 32))
+    {
+        throw hresult_invalid_argument(L"A negotiated known codec, 1-8 channels, nonzero sample rate/bitrate, and 8/16/24/32 bit depth are required.");
+    }
+    return mRequest;
+}
+
+void MatterCameraAudioStreamOptions::ValidateAllocated(
+    chip::app::Clusters::CameraAvStreamManagement::Commands::AudioStreamAllocate::Type const & request,
+    Controller::MatterCameraAudioStream const & stream)
+{
+    if (!stream || !stream.IsLiveView() || stream.AudioCodec() != static_cast<uint8_t>(request.audioCodec) ||
+        stream.Channels() != request.channelCount || stream.SampleRate() != request.sampleRate ||
+        stream.BitRate() != request.bitRate || stream.BitDepth() != request.bitDepth)
+    {
+        throw hresult_error(E_BOUNDS, L"Allocated audio metadata does not match the request.");
+    }
+}
+
+MatterCameraAudioStream::MatterCameraAudioStream(Windows::Foundation::Collections::IPropertySet const & fields)
+{
+    using namespace chip::app::Clusters::CameraAvStreamManagement;
+    mStream.audioStreamID = CameraStreamField<uint16_t>(fields, L"0");
+    mStream.streamUsage = static_cast<chip::app::Clusters::Globals::StreamUsageEnum>(CameraStreamField<uint8_t>(fields, L"1"));
+    mStream.audioCodec = static_cast<AudioCodecEnum>(CameraStreamField<uint8_t>(fields, L"2"));
+    mStream.channelCount = CameraStreamField<uint8_t>(fields, L"3");
+    mStream.sampleRate = CameraStreamField<uint32_t>(fields, L"4");
+    mStream.bitRate = CameraStreamField<uint32_t>(fields, L"5");
+    mStream.bitDepth = CameraStreamField<uint8_t>(fields, L"6");
+    mStream.referenceCount = CameraStreamField<uint8_t>(fields, L"7");
+    if (mStream.audioStreamID == UINT16_MAX || mStream.channelCount == 0 || mStream.channelCount > 8 ||
+        mStream.sampleRate == 0 || mStream.bitRate == 0 || mStream.bitDepth == 0)
+    {
+        throw hresult_error(E_BOUNDS, L"Allocated audio has invalid identifiers or format bounds.");
+    }
+}
+
+MatterCameraAudioFormatCapabilities::MatterCameraAudioFormatCapabilities(
+    Windows::Foundation::Collections::IPropertySet const & fields) : mChannels(CameraStreamField<uint8_t>(fields, L"0"))
+{
+    auto list = [&](wchar_t const * key) {
+        if (!fields.HasKey(key))
+        {
+            throw hresult_error(E_BOUNDS, L"Audio capabilities are missing a required list.");
+        }
+        Windows::Foundation::Collections::PropertySet root;
+        root.Insert(L"value", fields.Lookup(key));
+        return root;
+    };
+    mCodecs = single_threaded_vector(DescriptorNumericList<uint8_t>(list(L"1"))).GetView();
+    mRates = single_threaded_vector(DescriptorNumericList<uint32_t>(list(L"2"))).GetView();
+    mDepths = single_threaded_vector(DescriptorNumericList<uint8_t>(list(L"3"))).GetView();
+    if (mChannels == 0 || mChannels > 8 || mCodecs.Size() == 0 || mRates.Size() == 0 || mDepths.Size() == 0 ||
+        std::find(mRates.begin(), mRates.end(), uint32_t(0)) != mRates.end() ||
+        std::find(mDepths.begin(), mDepths.end(), uint8_t(0)) != mDepths.end())
+    {
+        throw hresult_error(E_BOUNDS, L"Audio capabilities contain invalid channel, sample-rate, or bit-depth bounds.");
+    }
+}
+
+void MatterCameraAudioFormatCapabilities::Validate(
+    chip::app::Clusters::CameraAvStreamManagement::Commands::AudioStreamAllocate::Type const & request) const
+{
+    if (request.channelCount > mChannels ||
+        std::find(mCodecs.begin(), mCodecs.end(), static_cast<uint8_t>(request.audioCodec)) == mCodecs.end() ||
+        std::find(mRates.begin(), mRates.end(), request.sampleRate) == mRates.end() ||
+        std::find(mDepths.begin(), mDepths.end(), request.bitDepth) == mDepths.end())
+    {
+        throw hresult_not_implemented(L"The requested audio format is not advertised by the camera microphone.");
+    }
+}
 
 MatterCameraVideoStreamOptions::MatterCameraVideoStreamOptions()
 {
@@ -3620,6 +3777,20 @@ MatterCameraSession::MatterCameraSession(std::shared_ptr<ControllerRuntime> runt
                                          uint16_t endpoint, uint16_t requestor) :
     mRuntime(std::move(runtime)), mHandle(handle), mNode(node), mEndpoint(endpoint), mRequestor(requestor)
 {}
+
+void MatterCameraSession::SetMediaMetadata(Controller::MatterCameraStreamSelection const & video,
+    Controller::MatterCameraStreamSelection const & audio, std::optional<uint16_t> videoId,
+    std::optional<uint16_t> audioId, std::optional<uint16_t> protocolId)
+{
+    mVideo = video;
+    mAudio = audio;
+    auto boxed = [](std::optional<uint16_t> id) -> Windows::Foundation::IReference<uint16_t> {
+        return id ? box_value(*id).as<Windows::Foundation::IReference<uint16_t>>() : nullptr;
+    };
+    mVideoId = boxed(videoId);
+    mAudioId = boxed(audioId);
+    mProtocolId = boxed(protocolId);
+}
 
 Windows::Foundation::IAsyncOperation<Controller::MatterCameraSignal>
 MatterCameraSession::WaitForSignalAsync(uint32_t timeoutMilliseconds)
@@ -3829,6 +4000,385 @@ bool MatterCameraCapabilities::SupportsClientOffer() const
         std::find(accepted.begin(), accepted.end(), Commands::ProvideICECandidates::Id) != accepted.end() &&
         std::find(accepted.begin(), accepted.end(), Commands::EndSession::Id) != accepted.end() &&
         std::find(generated.begin(), generated.end(), Commands::ProvideOfferResponse::Id) != generated.end();
+}
+
+namespace {
+
+template <typename Range, typename Value>
+bool CameraAdvertises(Range const & values, Value value)
+{
+    return std::find(values.begin(), values.end(), value) != values.end();
+}
+
+bool IsCameraAudioAdapter(Controller::MatterCameraCapabilities const & capabilities)
+{
+    if (!capabilities)
+    {
+        return false;
+    }
+    const auto descriptor = capabilities.Descriptor();
+    const auto types = descriptor.DeviceTypes();
+    return std::any_of(types.begin(), types.end(), [](auto const & type) {
+            return type.DeviceTypeId() == 0x0142 && type.Revision() <= 2;
+        }) && descriptor.HasCameraClusters() &&
+        CameraAdvertises(descriptor.ClientClusters(), chip::app::Clusters::WebRTCTransportRequestor::Id) &&
+        capabilities.StreamManagement().Revision() == 2 && capabilities.TransportProvider().Revision() == 2;
+}
+
+void RequireCameraAudioAdapter(Controller::MatterCameraCapabilities const & capabilities)
+{
+    if (!IsCameraAudioAdapter(capabilities))
+    {
+        throw hresult_not_implemented(L"The audio adapter requires Camera device type revision 1-2, provider/requestor composition, and generated cluster revision 2.");
+    }
+}
+
+bool CameraOffersAudio(Controller::MatterCameraCapabilities const & camera)
+{
+    using namespace chip::app::Clusters;
+    auto stream = camera.StreamManagement();
+    auto provider = camera.TransportProvider();
+    return (stream.FeatureMap() & uint32_t(CameraAvStreamManagement::Feature::kAudio)) != 0 &&
+        CameraAdvertises(stream.Attributes(), CameraAvStreamManagement::Attributes::MicrophoneCapabilities::Id) &&
+        CameraAdvertises(stream.Attributes(), CameraAvStreamManagement::Attributes::AllocatedAudioStreams::Id) &&
+        CameraAdvertises(stream.Attributes(), CameraAvStreamManagement::Attributes::SupportedStreamUsages::Id) &&
+        CameraAdvertises(stream.AcceptedCommands(), CameraAvStreamManagement::Commands::AudioStreamAllocate::Id) &&
+        CameraAdvertises(stream.AcceptedCommands(), CameraAvStreamManagement::Commands::AudioStreamDeallocate::Id) &&
+        CameraAdvertises(stream.GeneratedCommands(), CameraAvStreamManagement::Commands::AudioStreamAllocateResponse::Id) &&
+        CameraAdvertises(provider.AcceptedCommands(), WebRTCTransportProvider::Commands::ProvideOffer::Id) &&
+        CameraAdvertises(provider.AcceptedCommands(), WebRTCTransportProvider::Commands::ProvideICECandidates::Id) &&
+        CameraAdvertises(provider.AcceptedCommands(), WebRTCTransportProvider::Commands::EndSession::Id) &&
+        CameraAdvertises(provider.GeneratedCommands(), WebRTCTransportProvider::Commands::ProvideOfferResponse::Id);
+}
+
+Controller::MatterCameraAudioCapabilities ReadCameraAudioCapabilities(
+    std::shared_ptr<ControllerRuntime> const & runtime, uint64_t node, uint16_t endpoint,
+    std::shared_ptr<std::atomic_bool> const & canceled, std::chrono::steady_clock::time_point deadline,
+    Controller::MatterCameraStage & stage)
+{
+    using namespace chip::app::Clusters::CameraAvStreamManagement;
+    stage = Controller::MatterCameraStage::Validation;
+    if (!IsOperationalNodeId(node) || endpoint == kInvalidEndpointId)
+    {
+        throw hresult_invalid_argument(L"A valid operational node and camera endpoint are required.");
+    }
+    stage = Controller::MatterCameraStage::Descriptor;
+    auto descriptor = ReadEndpointDescriptor(runtime, node, endpoint, canceled, deadline);
+    stage = Controller::MatterCameraStage::Capabilities;
+    auto camera = ReadCameraCapabilities(runtime, node, descriptor, canceled, deadline);
+    RequireCameraAudioAdapter(camera);
+    auto result = winrt::make_self<implementation::MatterCameraAudioCapabilities>();
+    result->mCamera = camera;
+    const auto attributes = camera.StreamManagement().Attributes();
+    const auto features = camera.StreamManagement().FeatureMap();
+    auto read = [&](uint32_t attribute) { return runtime->ReadAttribute(node, endpoint, Id, attribute, canceled, deadline); };
+    if ((features & uint32_t(Feature::kAudio)) != 0 && CameraAdvertises(attributes, Attributes::MicrophoneCapabilities::Id))
+    {
+        result->mMicrophone = winrt::make<implementation::MatterCameraAudioFormatCapabilities>(
+            read(Attributes::MicrophoneCapabilities::Id));
+    }
+    if ((features & uint32_t(Feature::kSpeaker)) != 0 && CameraAdvertises(attributes, Attributes::SpeakerCapabilities::Id))
+    {
+        result->mSpeaker = winrt::make<implementation::MatterCameraAudioFormatCapabilities>(read(Attributes::SpeakerCapabilities::Id));
+    }
+    auto number = [&](uint32_t attribute) -> Windows::Foundation::IReference<uint8_t> {
+        if (!CameraAdvertises(attributes, attribute))
+        {
+            return nullptr;
+        }
+        return box_value(CameraStreamField<uint8_t>(read(attribute), L"value")).as<Windows::Foundation::IReference<uint8_t>>();
+    };
+    auto boolean = [&](uint32_t attribute) -> Windows::Foundation::IReference<bool> {
+        if (!CameraAdvertises(attributes, attribute))
+        {
+            return nullptr;
+        }
+        return box_value(PropertySetScalar<bool>(read(attribute), L"Camera audio mute")).as<Windows::Foundation::IReference<bool>>();
+    };
+    if (result->mMicrophone)
+    {
+        result->mMicrophoneMuted = boolean(Attributes::MicrophoneMuted::Id);
+        result->mMicrophoneVolume = number(Attributes::MicrophoneVolumeLevel::Id);
+        result->mMicrophoneMin = number(Attributes::MicrophoneMinLevel::Id);
+        result->mMicrophoneMax = number(Attributes::MicrophoneMaxLevel::Id);
+    }
+    if (result->mSpeaker)
+    {
+        result->mTalk = number(Attributes::TwoWayTalkSupport::Id);
+        result->mSpeakerMuted = boolean(Attributes::SpeakerMuted::Id);
+        result->mSpeakerVolume = number(Attributes::SpeakerVolumeLevel::Id);
+        result->mSpeakerMin = number(Attributes::SpeakerMinLevel::Id);
+        result->mSpeakerMax = number(Attributes::SpeakerMaxLevel::Id);
+    }
+    if (!CameraAdvertises(attributes, Attributes::MaxNetworkBandwidth::Id))
+    {
+        throw hresult_not_implemented(L"The camera does not advertise its network bandwidth constraint.");
+    }
+    result->mBandwidth = CameraStreamField<uint32_t>(read(Attributes::MaxNetworkBandwidth::Id), L"value");
+    if (result->mBandwidth == 0)
+    {
+        throw hresult_error(E_BOUNDS, L"The camera advertises zero network bandwidth.");
+    }
+    stage = Controller::MatterCameraStage::Privacy;
+    result->mPrivacy = CameraPrivacyEnabled(runtime, node, endpoint, attributes, canceled, deadline);
+    return *result;
+}
+
+Windows::Foundation::Collections::IVectorView<Controller::MatterCameraAudioStream> ReadCameraAudioStreams(
+    std::shared_ptr<ControllerRuntime> const & runtime, uint64_t node, uint16_t endpoint,
+    std::shared_ptr<std::atomic_bool> const & canceled, std::chrono::steady_clock::time_point deadline)
+{
+    using namespace chip::app::Clusters::CameraAvStreamManagement;
+    auto list = DescriptorList(runtime->ReadAttribute(node, endpoint, Id, Attributes::AllocatedAudioStreams::Id, canceled, deadline));
+    std::vector<Controller::MatterCameraAudioStream> streams;
+    for (auto const & value : list)
+    {
+        auto stream = winrt::make<implementation::MatterCameraAudioStream>(value.as<Windows::Foundation::Collections::IPropertySet>());
+        if (std::any_of(streams.begin(), streams.end(), [&](auto const & existing) { return existing.StreamId() == stream.StreamId(); }))
+        {
+            throw hresult_error(E_BOUNDS, L"Allocated audio streams contain a duplicate identifier.");
+        }
+        streams.push_back(std::move(stream));
+    }
+    return single_threaded_vector(std::move(streams)).GetView();
+}
+
+void RequireListening(Controller::MatterCameraAudioCapabilities const & capabilities, Controller::MatterCameraStage & stage)
+{
+    stage = Controller::MatterCameraStage::Capabilities;
+    if (!capabilities.SupportsListening())
+    {
+        throw hresult_not_implemented(L"The camera does not advertise compatible microphone formats and the complete audio command path.");
+    }
+    stage = Controller::MatterCameraStage::Privacy;
+    if (capabilities.PrivacyEnabled())
+    {
+        throw hresult_error(E_ACCESSDENIED, L"Camera privacy mode prevents audio streaming.");
+    }
+}
+
+void DeallocateCameraAudioStream(std::shared_ptr<ControllerRuntime> const & runtime, uint64_t node,
+    uint16_t endpoint, uint16_t stream)
+{
+    using namespace chip::app::Clusters::CameraAvStreamManagement;
+    runtime->AudioOwnership().StartRelease(node, endpoint, stream);
+    try
+    {
+        Commands::AudioStreamDeallocate::Type request;
+        request.audioStreamID = stream;
+        runtime->InvokeCommand(node, endpoint, Id, request.GetCommandId(), CameraCommandArguments(request),
+                               std::nullopt, request.GetCommandId());
+    }
+    catch (...)
+    {
+        runtime->AudioOwnership().ReleaseFinished(node, endpoint, false);
+        throw;
+    }
+    runtime->AudioOwnership().ReleaseFinished(node, endpoint, true);
+}
+
+Controller::MatterCameraAudioStream AllocateCameraAudioStream(
+    std::shared_ptr<ControllerRuntime> const & runtime, uint64_t node, uint16_t endpoint,
+    chip::app::Clusters::CameraAvStreamManagement::Commands::AudioStreamAllocate::Type const & request,
+    std::shared_ptr<std::atomic_bool> const & canceled, Controller::MatterCameraStage & stage,
+    std::shared_ptr<PendingCameraStream> const & ownership)
+{
+    using namespace chip::app::Clusters::CameraAvStreamManagement;
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(120);
+    auto capabilities = ReadCameraAudioCapabilities(runtime, node, endpoint, canceled, deadline, stage);
+    RequireListening(capabilities, stage);
+    stage = Controller::MatterCameraStage::StreamSelection;
+    get_self<implementation::MatterCameraAudioFormatCapabilities>(capabilities.Microphone())->Validate(request);
+    auto usages = DescriptorNumericList<uint8_t>(
+        runtime->ReadAttribute(node, endpoint, Id, Attributes::SupportedStreamUsages::Id, canceled, deadline));
+    if (!CameraAdvertises(usages, static_cast<uint8_t>(request.streamUsage)) || request.bitRate > capabilities.MaximumNetworkBandwidth())
+    {
+        throw hresult_not_implemented(L"Requested audio exceeds the advertised stream usage or bandwidth.");
+    }
+    if (canceled->load(std::memory_order_acquire))
+    {
+        throw hresult_canceled();
+    }
+    stage = Controller::MatterCameraStage::Validation;
+    runtime->AudioOwnership().Reserve(node, endpoint);
+    try
+    {
+        auto response = runtime->InvokeCommand(node, endpoint, Id, request.GetCommandId(), CameraCommandArguments(request),
+            std::nullopt, Commands::AudioStreamAllocateResponse::Id, true, &stage);
+        const auto id = CameraStreamField<uint16_t>(response, L"0");
+        runtime->AudioOwnership().Commit(node, endpoint, id);
+        try
+        {
+            ownership->Record(id);
+            if (canceled->load(std::memory_order_acquire))
+            {
+                throw hresult_canceled();
+            }
+            stage = Controller::MatterCameraStage::StreamSelection;
+            const auto streams = ReadCameraAudioStreams(runtime, node, endpoint, canceled, deadline);
+            auto found = std::find_if(streams.begin(), streams.end(), [&](auto const & stream) { return stream.StreamId() == id; });
+            if (found == streams.end())
+            {
+                throw hresult_error(E_BOUNDS, L"The owned audio allocation is absent from readback.");
+            }
+            const auto stream = *found;
+            MatterCameraAudioStreamOptions::ValidateAllocated(request, stream);
+            if (canceled->load(std::memory_order_acquire))
+            {
+                throw hresult_canceled();
+            }
+            return stream;
+        }
+        catch (...)
+        {
+            const auto failure = std::current_exception();
+            const auto failedStage = stage;
+            stage = Controller::MatterCameraStage::StreamDeallocation;
+            ownership->Release();
+            stage = failedStage;
+            std::rethrow_exception(failure);
+        }
+    }
+    catch (ChipOperationError const & error)
+    {
+        runtime->AudioOwnership().AllocationFailed(node, endpoint,
+            stage == Controller::MatterCameraStage::Validation || error.NativeError().IsIMStatus());
+        throw;
+    }
+    catch (...)
+    {
+        runtime->AudioOwnership().AllocationFailed(node, endpoint, stage == Controller::MatterCameraStage::Validation);
+        throw;
+    }
+}
+
+} // namespace
+
+bool MatterCameraAudioCapabilities::SupportsListening() const
+{
+    using Codec = chip::app::Clusters::CameraAvStreamManagement::AudioCodecEnum;
+    return IsCameraAudioAdapter(mCamera) && mMicrophone && CameraOffersAudio(mCamera) &&
+        (CameraAdvertises(mMicrophone.Codecs(), static_cast<uint8_t>(Codec::kOpus)) ||
+         CameraAdvertises(mMicrophone.Codecs(), static_cast<uint8_t>(Codec::kAacLc))) &&
+        std::any_of(mMicrophone.BitDepths().begin(), mMicrophone.BitDepths().end(),
+            [](uint8_t depth) { return depth == 8 || depth == 16 || depth == 24 || depth == 32; });
+}
+
+Windows::Foundation::IAsyncOperation<Controller::MatterCameraAudioCapabilities>
+MatterControllerCamera::ReadAudioCapabilitiesAsync(uint64_t nodeId, uint16_t endpointId)
+{
+    auto lifetime = get_strong();
+    auto canceled = std::make_shared<std::atomic_bool>(false);
+    auto cancellation = co_await get_cancellation_token();
+    cancellation.callback([canceled] { canceled->store(true, std::memory_order_release); });
+    co_await resume_background();
+    auto stage = Controller::MatterCameraStage::Validation;
+    co_return ReadCameraAudioCapabilities(mRuntime, nodeId, endpointId, canceled,
+        std::chrono::steady_clock::now() + std::chrono::seconds(120), stage);
+}
+
+Windows::Foundation::IAsyncOperation<Windows::Foundation::Collections::IVectorView<Controller::MatterCameraAudioStream>>
+MatterControllerCamera::ReadAllocatedAudioStreamsAsync(uint64_t nodeId, uint16_t endpointId)
+{
+    auto lifetime = get_strong();
+    auto canceled = std::make_shared<std::atomic_bool>(false);
+    auto cancellation = co_await get_cancellation_token();
+    cancellation.callback([canceled] { canceled->store(true, std::memory_order_release); });
+    co_await resume_background();
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(120);
+    auto stage = Controller::MatterCameraStage::Validation;
+    auto capabilities = ReadCameraAudioCapabilities(mRuntime, nodeId, endpointId, canceled, deadline, stage);
+    if ((capabilities.Camera().StreamManagement().FeatureMap() &
+         uint32_t(chip::app::Clusters::CameraAvStreamManagement::Feature::kAudio)) == 0 ||
+        !CameraAdvertises(capabilities.Camera().StreamManagement().Attributes(),
+                          chip::app::Clusters::CameraAvStreamManagement::Attributes::AllocatedAudioStreams::Id))
+    {
+        throw hresult_not_implemented(L"Allocated audio streams are not advertised.");
+    }
+    co_return ReadCameraAudioStreams(mRuntime, nodeId, endpointId, canceled, deadline);
+}
+
+Windows::Foundation::IAsyncOperation<Controller::MatterCameraAudioStream>
+MatterControllerCamera::AllocateAudioStreamAsync(uint64_t nodeId, uint16_t endpointId, Controller::MatterCameraAudioStreamOptions options)
+{
+    auto lifetime = get_strong();
+    if (!options)
+    {
+        throw hresult_invalid_argument(L"Audio stream options cannot be null.");
+    }
+    auto request = get_self<implementation::MatterCameraAudioStreamOptions>(options)->Snapshot();
+    auto canceled = std::make_shared<std::atomic_bool>(false);
+    auto ownership = std::make_shared<PendingCameraStream>([runtime = mRuntime, nodeId, endpointId](uint16_t stream) {
+        DeallocateCameraAudioStream(runtime, nodeId, endpointId, stream);
+    });
+    auto cancellation = co_await get_cancellation_token();
+    cancellation.callback([canceled, ownership] {
+        canceled->store(true, std::memory_order_release);
+        ownership->Cancel();
+    });
+    co_await resume_background();
+    auto stage = Controller::MatterCameraStage::Validation;
+    co_return AllocateCameraAudioStream(mRuntime, nodeId, endpointId, request, canceled, stage, ownership);
+}
+
+Windows::Foundation::IAsyncOperation<Controller::MatterCameraAudioStreamAllocationResult>
+MatterControllerCamera::TryAllocateAudioStreamAsync(uint64_t nodeId, uint16_t endpointId, Controller::MatterCameraAudioStreamOptions options)
+{
+    auto lifetime = get_strong();
+    auto stage = Controller::MatterCameraStage::Validation;
+    chip::app::Clusters::CameraAvStreamManagement::Commands::AudioStreamAllocate::Type request;
+    auto validation = RunCameraOperation(stage, [&] {
+        if (!options)
+        {
+            throw hresult_invalid_argument(L"Audio stream options cannot be null.");
+        }
+        request = get_self<implementation::MatterCameraAudioStreamOptions>(options)->Snapshot();
+    });
+    if (!validation.Succeeded())
+    {
+        co_return winrt::make<implementation::MatterCameraAudioStreamAllocationResult>(validation.Failure());
+    }
+    auto canceled = std::make_shared<std::atomic_bool>(false);
+    auto ownership = std::make_shared<PendingCameraStream>([runtime = mRuntime, nodeId, endpointId](uint16_t stream) {
+        DeallocateCameraAudioStream(runtime, nodeId, endpointId, stream);
+    });
+    auto cancellation = co_await get_cancellation_token();
+    cancellation.callback([canceled, ownership] {
+        canceled->store(true, std::memory_order_release);
+        ownership->Cancel();
+    });
+    co_await resume_background();
+    Controller::MatterCameraAudioStreamAllocationResult allocation{ nullptr };
+    auto result = RunCameraOperation(stage, [&] {
+        auto stream = AllocateCameraAudioStream(mRuntime, nodeId, endpointId, request, canceled, stage, ownership);
+        try
+        {
+            allocation = winrt::make<implementation::MatterCameraAudioStreamAllocationResult>(stream);
+        }
+        catch (...)
+        {
+            stage = Controller::MatterCameraStage::StreamDeallocation;
+            ownership->Release();
+            throw;
+        }
+    });
+    co_return result.Succeeded() ? allocation : winrt::make<implementation::MatterCameraAudioStreamAllocationResult>(result.Failure());
+}
+
+Windows::Foundation::IAsyncAction MatterControllerCamera::DeallocateAudioStreamAsync(uint64_t nodeId, uint16_t endpointId, uint16_t streamId)
+{
+    auto lifetime = get_strong();
+    co_await resume_background();
+    DeallocateCameraAudioStream(mRuntime, nodeId, endpointId, streamId);
+}
+
+Windows::Foundation::IAsyncOperation<Controller::MatterCameraOperationResult>
+MatterControllerCamera::TryDeallocateAudioStreamAsync(uint64_t nodeId, uint16_t endpointId, uint16_t streamId)
+{
+    auto lifetime = get_strong();
+    co_await resume_background();
+    auto stage = Controller::MatterCameraStage::StreamDeallocation;
+    co_return RunCameraOperation(stage, [&] { DeallocateCameraAudioStream(mRuntime, nodeId, endpointId, streamId); });
 }
 
 Windows::Foundation::IAsyncOperation<Controller::MatterCameraCapabilities>
@@ -4299,6 +4849,294 @@ MatterControllerCamera::TryStartWithIceServersAsync(uint64_t nodeId, uint16_t en
         co_return winrt::make<implementation::MatterCameraStartResult>(operation.Failure());
     }
     co_return winrt::make<implementation::MatterCameraStartResult>(std::move(session));
+}
+
+namespace {
+
+void ValidateCameraSelectedAudio(Controller::MatterCameraAudioCapabilities const & capabilities,
+    Windows::Foundation::Collections::IVectorView<Controller::MatterCameraAudioStream> const & streams, uint16_t id)
+{
+    using namespace chip::app::Clusters::CameraAvStreamManagement;
+    auto found = std::find_if(streams.begin(), streams.end(), [&](auto const & stream) { return stream.StreamId() == id; });
+    if (found == streams.end() || !(*found).IsLiveView())
+    {
+        throw hresult_invalid_argument(L"The selected audio ID is not an allocated LiveView stream.");
+    }
+    auto stream = *found;
+    Commands::AudioStreamAllocate::Type request;
+    request.streamUsage = chip::app::Clusters::Globals::StreamUsageEnum::kLiveView;
+    request.audioCodec = static_cast<AudioCodecEnum>(stream.AudioCodec());
+    request.channelCount = stream.Channels();
+    request.sampleRate = stream.SampleRate();
+    request.bitRate = stream.BitRate();
+    request.bitDepth = stream.BitDepth();
+    if ((request.audioCodec != AudioCodecEnum::kOpus && request.audioCodec != AudioCodecEnum::kAacLc) ||
+        (request.bitDepth != 8 && request.bitDepth != 16 && request.bitDepth != 24 && request.bitDepth != 32) ||
+        request.bitRate > capabilities.MaximumNetworkBandwidth())
+    {
+        throw hresult_not_implemented(L"The selected audio format is unsupported or exceeds advertised bandwidth.");
+    }
+    get_self<implementation::MatterCameraAudioFormatCapabilities>(capabilities.Microphone())->Validate(request);
+}
+
+void ValidateCameraSelectedVideo(
+    Windows::Foundation::Collections::IVectorView<Controller::MatterCameraVideoStream> const & streams, uint16_t id)
+{
+    const auto stream = FindAllocatedLiveViewStream(streams, id);
+    if (!stream)
+    {
+        throw hresult_invalid_argument(L"The selected video ID is not an allocated LiveView stream.");
+    }
+    if (stream.VideoCodec() != uint8_t(chip::app::Clusters::CameraAvStreamManagement::VideoCodecEnum::kH264))
+    {
+        throw hresult_not_implemented(L"The selected video codec is not supported by this camera adapter.");
+    }
+    if (stream.MinimumWidth() == 0 || stream.MinimumHeight() == 0 || stream.MinimumFrameRate() == 0 ||
+        stream.MinimumBitRate() == 0 || stream.KeyFrameInterval() == 0)
+    {
+        throw hresult_error(E_BOUNDS, L"The selected video stream has zero format bounds.");
+    }
+}
+
+Controller::MatterCameraSession StartPreparedCameraSession(std::shared_ptr<ControllerRuntime> const & runtime,
+    uint64_t node, uint16_t endpoint, Controller::MatterCameraStreamSelection const & video,
+    Controller::MatterCameraStreamSelection const & audio, std::string const & sdp,
+    std::vector<Controller::MatterCameraIceServer> const & servers, std::shared_ptr<std::atomic_bool> const & canceled,
+    Controller::MatterCameraStage & stage, std::shared_ptr<PendingCameraSession> const & ownership)
+{
+    using Kind = Controller::MatterCameraStreamSelectionKind;
+    stage = Controller::MatterCameraStage::Validation;
+    if (!IsOperationalNodeId(node) || endpoint == kInvalidEndpointId ||
+        !video || !audio || (video.Kind() == Kind::Absent && audio.Kind() == Kind::Absent) ||
+        sdp.empty() || sdp.size() > 16384 || sdp.find('\0') != std::string::npos)
+    {
+        throw hresult_invalid_argument(L"Explicit selections for both media types, at least one selected medium, and bounded SDP are required.");
+    }
+    runtime->EnsureCameraSignalingEnabled();
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(120);
+    auto capabilities = ReadCameraAudioCapabilities(runtime, node, endpoint, canceled, deadline, stage);
+    if (audio.Kind() != Kind::Absent)
+    {
+        RequireListening(capabilities, stage);
+        stage = Controller::MatterCameraStage::StreamSelection;
+        auto usages = DescriptorNumericList<uint8_t>(runtime->ReadAttribute(node, endpoint,
+            chip::app::Clusters::CameraAvStreamManagement::Id,
+            chip::app::Clusters::CameraAvStreamManagement::Attributes::SupportedStreamUsages::Id, canceled, deadline));
+        if (!CameraAdvertises(usages, uint8_t(chip::app::Clusters::Globals::StreamUsageEnum::kLiveView)))
+        {
+            throw hresult_not_implemented(L"The camera does not advertise LiveView audio usage.");
+        }
+    }
+    if (video.Kind() != Kind::Absent && !capabilities.Camera().SupportsClientOffer())
+    {
+        stage = Controller::MatterCameraStage::Capabilities;
+        throw hresult_not_implemented(L"The camera does not advertise video and the complete client-offer path.");
+    }
+    stage = Controller::MatterCameraStage::Privacy;
+    ReadCameraPrivacy(runtime, node, capabilities.Camera(), canceled, deadline);
+    stage = Controller::MatterCameraStage::StreamSelection;
+    if (video.Kind() != Kind::Absent &&
+        !CameraAdvertises(capabilities.Camera().StreamManagement().Attributes(),
+            chip::app::Clusters::CameraAvStreamManagement::Attributes::AllocatedVideoStreams::Id))
+    {
+        throw hresult_not_implemented(L"The camera does not advertise video stream readback.");
+    }
+    if (video.Kind() == Kind::ExplicitId)
+    {
+        ValidateCameraSelectedVideo(ReadCameraVideoStreams(runtime, node, endpoint, canceled, deadline), video.StreamId().Value());
+    }
+    if (audio.Kind() == Kind::ExplicitId)
+    {
+        ValidateCameraSelectedAudio(capabilities, ReadCameraAudioStreams(runtime, node, endpoint, canceled, deadline), audio.StreamId().Value());
+    }
+    if (canceled->load(std::memory_order_acquire))
+    {
+        throw hresult_canceled();
+    }
+    stage = Controller::MatterCameraStage::Signaling;
+    auto session = runtime->StartCamera(node, endpoint, video, audio, sdp, canceled, servers);
+    try
+    {
+        ownership->Record(session.Handle());
+        stage = Controller::MatterCameraStage::StreamSelection;
+        auto selected = runtime->SelectedCameraStreams(session.Handle());
+        if (selected.first)
+        {
+            ValidateCameraSelectedVideo(ReadCameraVideoStreams(runtime, node, endpoint, canceled, deadline), *selected.first);
+        }
+        if (selected.second)
+        {
+            ValidateCameraSelectedAudio(capabilities, ReadCameraAudioStreams(runtime, node, endpoint, canceled, deadline), *selected.second);
+        }
+        stage = Controller::MatterCameraStage::Privacy;
+        ReadCameraPrivacy(runtime, node, capabilities.Camera(), canceled, deadline);
+        if (canceled->load(std::memory_order_acquire))
+        {
+            throw hresult_canceled();
+        }
+        return session;
+    }
+    catch (...)
+    {
+        const auto failure = std::current_exception();
+        const auto failedStage = stage;
+        stage = Controller::MatterCameraStage::SessionEnd;
+        ownership->Release();
+        stage = failedStage;
+        std::rethrow_exception(failure);
+    }
+}
+
+std::vector<Controller::MatterCameraIceServer> CameraSessionIceServers(
+    Windows::Foundation::Collections::IVectorView<Controller::MatterCameraIceServer> const & servers)
+{
+    if (!servers || servers.Size() > 4)
+    {
+        throw hresult_invalid_argument(L"An explicit list of zero to four ICE servers is required.");
+    }
+    std::vector<Controller::MatterCameraIceServer> result;
+    for (auto const & server : servers)
+    {
+        if (!server)
+        {
+            throw hresult_invalid_argument(L"ICE server entries cannot be null.");
+        }
+        result.push_back(server);
+    }
+    return result;
+}
+
+std::pair<uint32_t, Windows::Foundation::Collections::IPropertySet> CameraAudioControlArguments(
+    Controller::MatterCameraAudioCapabilities const & capabilities, bool speaker, bool volume, uint8_t value)
+{
+    using namespace chip::app::Clusters::CameraAvStreamManagement;
+    RequireCameraAudioAdapter(capabilities.Camera());
+    auto format = speaker ? capabilities.Speaker() : capabilities.Microphone();
+    auto muted = speaker ? capabilities.SpeakerMuted() : capabilities.MicrophoneMuted();
+    auto level = speaker ? capabilities.SpeakerVolume() : capabilities.MicrophoneVolume();
+    auto minimum = speaker ? capabilities.SpeakerMinimumVolume() : capabilities.MicrophoneMinimumVolume();
+    auto maximum = speaker ? capabilities.SpeakerMaximumVolume() : capabilities.MicrophoneMaximumVolume();
+    if (!format || (volume ? (!level || !minimum || !maximum) : !muted))
+    {
+        throw hresult_not_implemented(L"The camera does not advertise this microphone/speaker control.");
+    }
+    if (volume && (minimum.Value() > maximum.Value() || level.Value() < minimum.Value() || level.Value() > maximum.Value()))
+    {
+        throw hresult_error(E_BOUNDS, L"The camera reports inconsistent volume bounds.");
+    }
+    if (volume && (value < minimum.Value() || value > maximum.Value()))
+    {
+        throw hresult_invalid_argument(L"Volume is outside the camera's advertised minimum and maximum.");
+    }
+    if (!volume && value == 0 && capabilities.PrivacyEnabled())
+    {
+        throw hresult_error(E_ACCESSDENIED, L"Camera privacy mode prevents unmuting.");
+    }
+    const auto attribute = volume ? (speaker ? Attributes::SpeakerVolumeLevel::Id : Attributes::MicrophoneVolumeLevel::Id)
+                                 : (speaker ? Attributes::SpeakerMuted::Id : Attributes::MicrophoneMuted::Id);
+    Windows::Foundation::Collections::PropertySet data;
+    data.Insert(L"value", volume ? box_value(value) : box_value(value != 0));
+    return { attribute, data };
+}
+
+void WriteCameraAudioControl(std::shared_ptr<ControllerRuntime> const & runtime, uint64_t node, uint16_t endpoint,
+    bool speaker, bool volume, uint8_t value)
+{
+    auto canceled = std::make_shared<std::atomic_bool>(false);
+    auto stage = Controller::MatterCameraStage::Validation;
+    auto capabilities = ReadCameraAudioCapabilities(runtime, node, endpoint, canceled,
+        std::chrono::steady_clock::now() + std::chrono::seconds(120), stage);
+    auto [attribute, data] = CameraAudioControlArguments(capabilities, speaker, volume, value);
+    runtime->WriteAttribute(node, endpoint, chip::app::Clusters::CameraAvStreamManagement::Id, attribute, data);
+}
+
+} // namespace
+
+Windows::Foundation::IAsyncOperation<Controller::MatterCameraSession>
+MatterControllerCamera::StartSessionAsync(uint64_t nodeId, uint16_t endpointId,
+    Controller::MatterCameraStreamSelection video, Controller::MatterCameraStreamSelection audio, hstring offer,
+    Windows::Foundation::Collections::IVectorView<Controller::MatterCameraIceServer> servers)
+{
+    auto lifetime = get_strong();
+    auto values = CameraSessionIceServers(servers);
+    auto sdp = to_string(offer);
+    auto canceled = std::make_shared<std::atomic_bool>(false);
+    auto ownership = std::make_shared<PendingCameraSession>([runtime = mRuntime](uint64_t handle) { runtime->CloseCamera(handle); });
+    auto cancellation = co_await get_cancellation_token();
+    cancellation.callback([canceled, ownership] {
+        canceled->store(true, std::memory_order_release);
+        ownership->Cancel();
+    });
+    co_await resume_background();
+    auto stage = Controller::MatterCameraStage::Validation;
+    co_return StartPreparedCameraSession(mRuntime, nodeId, endpointId, video, audio, sdp, values, canceled, stage, ownership);
+}
+
+Windows::Foundation::IAsyncOperation<Controller::MatterCameraStartResult>
+MatterControllerCamera::TryStartSessionAsync(uint64_t nodeId, uint16_t endpointId,
+    Controller::MatterCameraStreamSelection video, Controller::MatterCameraStreamSelection audio, hstring offer,
+    Windows::Foundation::Collections::IVectorView<Controller::MatterCameraIceServer> servers)
+{
+    auto lifetime = get_strong();
+    auto stage = Controller::MatterCameraStage::Validation;
+    std::vector<Controller::MatterCameraIceServer> values;
+    auto validation = RunCameraOperation(stage, [&] { values = CameraSessionIceServers(servers); });
+    if (!validation.Succeeded())
+    {
+        co_return winrt::make<implementation::MatterCameraStartResult>(validation.Failure());
+    }
+    auto sdp = to_string(offer);
+    auto canceled = std::make_shared<std::atomic_bool>(false);
+    auto ownership = std::make_shared<PendingCameraSession>([runtime = mRuntime](uint64_t handle) { runtime->CloseCamera(handle); });
+    auto cancellation = co_await get_cancellation_token();
+    cancellation.callback([canceled, ownership] {
+        canceled->store(true, std::memory_order_release);
+        ownership->Cancel();
+    });
+    co_await resume_background();
+    Controller::MatterCameraStartResult result{ nullptr };
+    auto operation = RunCameraOperation(stage, [&] {
+        auto session = StartPreparedCameraSession(mRuntime, nodeId, endpointId, video, audio, sdp, values, canceled, stage, ownership);
+        try
+        {
+            result = winrt::make<implementation::MatterCameraStartResult>(session);
+        }
+        catch (...)
+        {
+            stage = Controller::MatterCameraStage::SessionEnd;
+            ownership->Release();
+            throw;
+        }
+    });
+    co_return operation.Succeeded() ? result : winrt::make<implementation::MatterCameraStartResult>(operation.Failure());
+}
+
+Windows::Foundation::IAsyncAction MatterControllerCamera::WriteMicrophoneMuteAsync(uint64_t nodeId, uint16_t endpointId, bool muted)
+{
+    auto lifetime = get_strong();
+    co_await resume_background();
+    WriteCameraAudioControl(mRuntime, nodeId, endpointId, false, false, uint8_t(muted));
+}
+
+Windows::Foundation::IAsyncAction MatterControllerCamera::WriteSpeakerMuteAsync(uint64_t nodeId, uint16_t endpointId, bool muted)
+{
+    auto lifetime = get_strong();
+    co_await resume_background();
+    WriteCameraAudioControl(mRuntime, nodeId, endpointId, true, false, uint8_t(muted));
+}
+
+Windows::Foundation::IAsyncAction MatterControllerCamera::WriteMicrophoneVolumeAsync(uint64_t nodeId, uint16_t endpointId, uint8_t level)
+{
+    auto lifetime = get_strong();
+    co_await resume_background();
+    WriteCameraAudioControl(mRuntime, nodeId, endpointId, false, true, level);
+}
+
+Windows::Foundation::IAsyncAction MatterControllerCamera::WriteSpeakerVolumeAsync(uint64_t nodeId, uint16_t endpointId, uint8_t level)
+{
+    auto lifetime = get_strong();
+    co_await resume_background();
+    WriteCameraAudioControl(mRuntime, nodeId, endpointId, true, true, level);
 }
 
 MatterEndpointDescriptor::MatterEndpointDescriptor(uint16_t endpointId, std::vector<uint16_t> parts,

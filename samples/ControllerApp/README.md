@@ -82,7 +82,7 @@ direct development outputs:
 ```powershell
 dotnet build .\samples\ControllerApp\MatterControllerApp.csproj `
     -p:Platform=x64 -p:Unpackaged=true `
-    -p:MatterControllerPackageVersion=0.2.0-camera.19 -p:MatterCameraDevelopment=true
+    -p:MatterControllerPackageVersion=0.2.0-camera.20 -p:MatterCameraDevelopment=true
 ```
 
 The package version property defaults to the existing published preview, and
@@ -99,6 +99,10 @@ verify launch, live media, or hardware interoperability.
 This checks receiver content, camera activation registrations, and the exact
 native DLL in the package. The sample includes camera class registrations in
 both its unpackaged application manifest and MSIX manifest.
+The `.20` SDK adds typed camera audio protocol APIs and versioned session
+selection metadata; it does not add a media decoder/capture engine. This
+receiver still requests video only and denies microphone permissions. Audible
+listening, talkback and representative-device acceptance remain separate work.
 
 Launch the resulting executable with `--camera`, select a commissioned device,
 and open **Camera receiver (development)**. Discover its camera endpoints and

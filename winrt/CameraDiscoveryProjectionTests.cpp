@@ -21,6 +21,7 @@
 #include <stdexcept>
 #include <filesystem>
 #include <chrono>
+#include <array>
 
 namespace {
 namespace Controller = winrt::Matter::Windows::Controller;
@@ -281,6 +282,40 @@ void TestHostedControllerComposition()
         }
         Require(host.CloseLocal(handle) == CHIP_NO_ERROR && host.ActiveHandle() == 0,
                 "Hosted camera local cleanup failed");
+    }
+    using Selection = Implementation::CameraControllerRuntime::Cluster::StreamSelection;
+    const std::array selections{ Selection::Absent(), Selection::AutoSelect(), Selection::ExplicitId(0) };
+    for (size_t video = 0; video < selections.size(); ++video)
+    {
+        for (size_t audio = 0; audio < selections.size(); ++audio)
+        {
+            if (video == 0 && audio == 0)
+            {
+                continue;
+            }
+            Require(host.Create(fabrics.GetFabricTable(), sessions, system, ScopedNodeId(0x1234, fabric), 2,
+                                selections[video], selections[audio], handle) == CHIP_NO_ERROR,
+                    "Tagged hosted camera creation failed");
+            Implementation::CameraControllerRuntime::Cluster::SessionInfo info;
+            Require(host.GetSessionInfo(handle, info) == CHIP_NO_ERROR, "Tagged hosted session metadata was unavailable");
+            Clusters::WebRTCTransportProvider::Commands::ProvideOffer::Type offer;
+            Require(chip::Controller::CameraProviderClient::BuildOffer(info, host.RequestorEndpoint(), "v=0\r\n"_span, {}, offer) ==
+                        CHIP_NO_ERROR && offer.videoStreamID.HasValue() == (video != 0) &&
+                        offer.audioStreamID.HasValue() == (audio != 0) &&
+                        !offer.videoStreams.HasValue() && !offer.audioStreams.HasValue(),
+                    "Tagged hosted media selection lost field presence or mixed stream-array revisions");
+            if (video != 0)
+            {
+                Require(offer.videoStreamID.Value().IsNull() == (video == 1) &&
+                        (video == 1 || offer.videoStreamID.Value().Value() == 0), "Video null/explicit zero selection changed");
+            }
+            if (audio != 0)
+            {
+                Require(offer.audioStreamID.Value().IsNull() == (audio == 1) &&
+                        (audio == 1 || offer.audioStreamID.Value().Value() == 0), "Audio null/explicit zero selection changed");
+            }
+            Require(host.CloseLocal(handle) == CHIP_NO_ERROR, "Tagged hosted camera cleanup failed");
+        }
     }
     std::cout << "PASS hosted shared Binding composition, initialization errors, peer metadata ACL, and repeated lifecycle\n";
 }

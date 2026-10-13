@@ -6,6 +6,70 @@
 #include <clusters/WebRTCTransportProvider/CommandIds.h>
 #include <lib/core/CHIPError.h>
 
+extern "C" __declspec(dllexport) int32_t __stdcall GetCameraAudioFixture(int32_t variant, void ** value) noexcept
+{
+    if (value == nullptr)
+    {
+        return winrt::hresult_invalid_argument().code();
+    }
+    *value = nullptr;
+    try
+    {
+        namespace Implementation = winrt::Matter::Windows::Controller::implementation;
+        namespace Controller = winrt::Matter::Windows::Controller;
+        namespace Camera = chip::app::Clusters::CameraAvStreamManagement;
+        namespace Collections = winrt::Windows::Foundation::Collections;
+        Collections::PropertySet fields;
+        for (auto [key, number] : std::initializer_list<std::pair<wchar_t const *, uint64_t>>{
+            { L"0", 0 }, { L"1", 3 }, { L"2", 0 }, { L"3", 2 }, { L"4", 48000 },
+            { L"5", 64000 }, { L"6", 16 }, { L"7", 0 } })
+        {
+            fields.Insert(key, winrt::box_value(number));
+        }
+        auto stream = winrt::make<Implementation::MatterCameraAudioStream>(fields);
+        if (variant == 0)
+        {
+            *value = winrt::detach_abi(stream);
+        }
+        else if (variant == 1)
+        {
+            fields.Clear();
+            fields.Insert(L"0", winrt::box_value(uint64_t(2)));
+            fields.Insert(L"1", winrt::single_threaded_vector<winrt::Windows::Foundation::IInspectable>({
+                winrt::box_value(uint64_t(0)), winrt::box_value(uint64_t(255)) }));
+            fields.Insert(L"2", winrt::single_threaded_vector<winrt::Windows::Foundation::IInspectable>({
+                winrt::box_value(uint64_t(16000)), winrt::box_value(uint64_t(48000)) }));
+            fields.Insert(L"3", winrt::single_threaded_vector<winrt::Windows::Foundation::IInspectable>({
+                winrt::box_value(uint64_t(16)), winrt::box_value(uint64_t(24)) }));
+            auto caps = winrt::make_self<Implementation::MatterCameraAudioCapabilities>();
+            caps->mMicrophone = winrt::make<Implementation::MatterCameraAudioFormatCapabilities>(fields);
+            caps->mMicrophoneMuted = winrt::box_value(false).as<winrt::Windows::Foundation::IReference<bool>>();
+            caps->mMicrophoneVolume = winrt::box_value(uint8_t(20)).as<winrt::Windows::Foundation::IReference<uint8_t>>();
+            caps->mBandwidth = 128000;
+            *value = winrt::detach_abi(Controller::MatterCameraAudioCapabilities(*caps));
+        }
+        else if (variant == 2)
+        {
+            *value = winrt::detach_abi(winrt::make<Implementation::MatterCameraAudioStreamAllocationResult>(stream));
+        }
+        else if (variant == 3)
+        {
+            *value = winrt::detach_abi(winrt::make<Implementation::MatterCameraAudioStreamAllocationResult>(
+                winrt::make<Implementation::MatterCameraFailure>(Controller::MatterCameraStage::StreamAllocation,
+                    int32_t(0x8007001f), true, CHIP_IM_GLOBAL_STATUS(DynamicConstraintError).AsInteger(), L"Audio allocation rejected")));
+        }
+        else
+        {
+            throw winrt::hresult_invalid_argument();
+        }
+        return 0;
+    }
+    catch (...)
+    {
+        return winrt::to_hresult();
+    }
+}
+
 extern "C" __declspec(dllexport) int32_t __stdcall GetRetainedCameraSession(void * controllerValue, void ** value) noexcept
 {
     if (controllerValue == nullptr || value == nullptr)
@@ -22,6 +86,9 @@ extern "C" __declspec(dllexport) int32_t __stdcall GetRetainedCameraSession(void
         auto runtime = winrt::get_self<Implementation::MatterController>(controller)->Runtime();
         auto session = winrt::make<Implementation::MatterCameraSession>(
             runtime, UINT64_MAX, uint64_t(1), uint16_t(2), uint16_t(3));
+        auto video = winrt::make<Implementation::MatterCameraStreamSelection>(Controller::MatterCameraStreamSelectionKind::Absent, nullptr);
+        auto audio = winrt::make<Implementation::MatterCameraStreamSelection>(Controller::MatterCameraStreamSelectionKind::AutoSelect, nullptr);
+        winrt::get_self<Implementation::MatterCameraSession>(session)->SetMediaMetadata(video, audio, std::nullopt, uint16_t(0), uint16_t(0));
         *value = winrt::detach_abi(session);
         return 0;
     }

@@ -191,7 +191,8 @@ void TestInvalidStructureTag()
     std::cout << "PASS invalid structure tags rejected and dispatched allocation timeout diagnostics preserved\n";
 }
 
-void TestAllocationRejectionResponses()
+void TestAllocationRejectionResponses(chip::CommandId command = Allocation::Id,
+                                     chip::CommandId response = Camera::Commands::VideoStreamAllocateResponse::Id)
 {
     namespace Controller = winrt::Matter::Windows::Controller;
     using Category = Controller::MatterCameraFailureCategory;
@@ -202,10 +203,9 @@ void TestAllocationRejectionResponses()
              std::pair{ Status::InvalidCommand, Category::CommandRejected },
              std::pair{ Status::Failure, Category::CommandRejected } })
     {
-        Implementation::GenericInvokeState state(2, Camera::Id, Allocation::Id, {}, std::nullopt,
-                                                 Camera::Commands::VideoStreamAllocateResponse::Id, true);
+        Implementation::GenericInvokeState state(2, Camera::Id, command, {}, std::nullopt, response, true);
         const chip::app::StatusIB rejection(status);
-        state.OnResponse(nullptr, chip::app::ConcreteCommandPath(2, Camera::Id, Allocation::Id), rejection, nullptr);
+        state.OnResponse(nullptr, chip::app::ConcreteCommandPath(2, Camera::Id, command), rejection, nullptr);
         state.OnDone(nullptr);
         Require(state.complete && state.result == rejection.ToChipError() && !state.value,
                 "A camera rejection supplied allocation metadata or lost its exact status");
@@ -218,9 +218,8 @@ void TestAllocationRejectionResponses()
                 result.Failure().HasNativeError() && result.Failure().NativeError() == rejection.ToChipError().AsInteger() &&
                 !result.Failure().Retryable(), "Explicit allocation rejection became unknown/uncertain or retryable");
     }
-    Implementation::GenericInvokeState malformed(2, Camera::Id, Allocation::Id, {}, std::nullopt,
-                                                 Camera::Commands::VideoStreamAllocateResponse::Id, true);
-    malformed.OnResponse(nullptr, chip::app::ConcreteCommandPath(3, Camera::Id, Allocation::Id),
+    Implementation::GenericInvokeState malformed(2, Camera::Id, command, {}, std::nullopt, response, true);
+    malformed.OnResponse(nullptr, chip::app::ConcreteCommandPath(3, Camera::Id, command),
                          chip::app::StatusIB(Status::DynamicConstraintError), nullptr);
     malformed.OnDone(nullptr);
     Require(malformed.result == CHIP_ERROR_INVALID_ARGUMENT, "An uncorrelated rejection was treated as a known outcome");
@@ -277,6 +276,288 @@ void TestZeroReferenceAllocatedMetadata()
     }
     std::cout << "PASS default and reported G350 allocation metadata with zero/nonzero transport references\n";
 }
+
+template <class Operation>
+void RequireHResult(Operation operation, winrt::hresult expected, char const * message)
+{
+    try
+    {
+        operation();
+    }
+    catch (winrt::hresult_error const & error)
+    {
+        Require(error.code() == expected, message);
+        return;
+    }
+    Require(false, message);
+}
+
+Camera::Commands::AudioStreamAllocate::Type AudioRequest()
+{
+    auto options = winrt::make<Implementation::MatterCameraAudioStreamOptions>();
+    options.AudioCodec(0);
+    options.Channels(2);
+    options.SampleRate(48000);
+    options.BitRate(64000);
+    options.BitDepth(16);
+    return winrt::get_self<Implementation::MatterCameraAudioStreamOptions>(options)->Snapshot();
+}
+
+winrt::Matter::Windows::Controller::MatterCameraAudioFormatCapabilities AudioFormats()
+{
+    Camera::Structs::AudioCapabilitiesStruct::Type capabilities;
+    Camera::AudioCodecEnum codecs[]{ Camera::AudioCodecEnum::kOpus, Camera::AudioCodecEnum::kAacLc,
+                                   static_cast<Camera::AudioCodecEnum>(255) };
+    uint32_t rates[]{ 16000, 48000 };
+    uint8_t depths[]{ 16, 24 };
+    capabilities.maxNumberOfChannels = 2;
+    capabilities.supportedCodecs = chip::app::DataModel::List<const Camera::AudioCodecEnum>(codecs);
+    capabilities.supportedSampleRates = chip::app::DataModel::List<const uint32_t>(rates);
+    capabilities.supportedBitDepths = chip::app::DataModel::List<const uint8_t>(depths);
+    return winrt::make<Implementation::MatterCameraAudioFormatCapabilities>(
+        Implementation::CameraCommandArguments(capabilities));
+}
+
+winrt::Matter::Windows::Controller::MatterCameraCapabilities AudioCamera(
+    uint32_t deviceType = 0x0142, uint16_t revision = 2, bool requestor = true, bool commands = true)
+{
+    namespace Controller = winrt::Matter::Windows::Controller;
+    namespace Provider = chip::app::Clusters::WebRTCTransportProvider;
+    auto descriptor = winrt::make<Implementation::MatterEndpointDescriptor>(
+        uint16_t(2), std::vector<uint16_t>{},
+        std::vector<uint32_t>{ Camera::Id, Provider::Id },
+        requestor ? std::vector<uint32_t>{ chip::app::Clusters::WebRTCTransportRequestor::Id } : std::vector<uint32_t>{},
+        std::vector<Controller::MatterDeviceType>{
+            winrt::make<Implementation::MatterDeviceType>(deviceType, uint16_t(2)) });
+    auto stream = winrt::make<Implementation::MatterCameraClusterCapabilities>(
+        Camera::Id, revision, uint32_t(Camera::Feature::kAudio) | uint32_t(Camera::Feature::kSpeaker),
+        std::vector<uint32_t>{ Camera::Attributes::MicrophoneCapabilities::Id, Camera::Attributes::AllocatedAudioStreams::Id,
+                               Camera::Attributes::SupportedStreamUsages::Id },
+        commands ? std::vector<uint32_t>{ Camera::Commands::AudioStreamAllocate::Id, Camera::Commands::AudioStreamDeallocate::Id }
+                 : std::vector<uint32_t>{},
+        std::vector<uint32_t>{ Camera::Commands::AudioStreamAllocateResponse::Id });
+    auto provider = winrt::make<Implementation::MatterCameraClusterCapabilities>(
+        Provider::Id, uint16_t(2), uint32_t(0), std::vector<uint32_t>{},
+        std::vector<uint32_t>{ Provider::Commands::ProvideOffer::Id, Provider::Commands::ProvideICECandidates::Id,
+                               Provider::Commands::EndSession::Id },
+        std::vector<uint32_t>{ Provider::Commands::ProvideOfferResponse::Id });
+    return winrt::make<Implementation::MatterCameraCapabilities>(descriptor, stream, provider);
+}
+
+void TestAudioTlvAndMetadata()
+{
+    auto options = winrt::make<Implementation::MatterCameraAudioStreamOptions>();
+    RequireHResult([&] { winrt::get_self<Implementation::MatterCameraAudioStreamOptions>(options)->Snapshot(); },
+                   E_INVALIDARG, "Audio defaults silently chose a format");
+    auto request = AudioRequest();
+    std::vector<uint8_t> encoded;
+    Implementation::CheckChipError(Implementation::EncodePropertySetRoot(
+        Implementation::CameraCommandArguments(request), encoded), L"Re-encode audio allocation");
+    chip::TLV::TLVReader reader;
+    reader.Init(encoded.data(), encoded.size());
+    Implementation::CheckChipError(reader.Next(), L"Read audio allocation");
+    Camera::Commands::AudioStreamAllocate::DecodableType decoded;
+    Implementation::CheckChipError(decoded.Decode(reader), L"Decode audio allocation");
+    Require(decoded.streamUsage == request.streamUsage && decoded.audioCodec == request.audioCodec &&
+            decoded.channelCount == 2 && decoded.sampleRate == 48000 && decoded.bitRate == 64000 && decoded.bitDepth == 16,
+            "Generated audio allocation fields changed in the production TLV bridge");
+    auto formats = AudioFormats();
+    Require(formats.MaximumChannels() == 2 && formats.Codecs().Size() == 3 && formats.Codecs().GetAt(2) == 255 &&
+            formats.SampleRates().GetAt(1) == 48000 && formats.BitDepths().GetAt(1) == 24,
+            "Nested capability lists or unknown codec values were lost");
+    auto format = winrt::get_self<Implementation::MatterCameraAudioFormatCapabilities>(formats);
+    format->Validate(request);
+    request.channelCount = 3;
+    RequireHResult([&] { format->Validate(request); }, E_NOTIMPL, "Unadvertised channels were accepted");
+    request = AudioRequest();
+    request.sampleRate = 44100;
+    RequireHResult([&] { format->Validate(request); }, E_NOTIMPL, "Unadvertised rate was accepted");
+    request = AudioRequest();
+    Camera::Structs::AudioStreamStruct::Type metadata;
+    metadata.audioStreamID = 0;
+    metadata.streamUsage = request.streamUsage;
+    metadata.audioCodec = request.audioCodec;
+    metadata.channelCount = request.channelCount;
+    metadata.sampleRate = request.sampleRate;
+    metadata.bitRate = request.bitRate;
+    metadata.bitDepth = request.bitDepth;
+    for (uint8_t count : { uint8_t(0), uint8_t(1), UINT8_MAX })
+    {
+        metadata.referenceCount = count;
+        auto stream = winrt::make<Implementation::MatterCameraAudioStream>(Implementation::CameraCommandArguments(metadata));
+        Implementation::MatterCameraAudioStreamOptions::ValidateAllocated(request, stream);
+        Require(stream.StreamId() == 0 && stream.ReferenceCount() == count, "Audio ID zero or transport count was coerced");
+        auto result = winrt::make<Implementation::MatterCameraAudioStreamAllocationResult>(stream);
+        Require(result.Succeeded() && !result.Failure(), "Audio result did not preserve success discrimination");
+    }
+    for (int field = 0; field < 6; ++field)
+    {
+        auto fields = Implementation::CameraCommandArguments(metadata);
+        fields.Insert(std::to_wstring(field + 1), winrt::box_value(uint64_t(
+            field == 0 ? uint64_t(chip::app::Clusters::Globals::StreamUsageEnum::kRecording) : uint64_t(1))));
+        auto stream = winrt::make<Implementation::MatterCameraAudioStream>(fields);
+        RequireHResult([&] { Implementation::MatterCameraAudioStreamOptions::ValidateAllocated(request, stream); },
+                       E_BOUNDS, "Mismatched audio metadata was accepted");
+    }
+    auto fields = Implementation::CameraCommandArguments(metadata);
+    fields.Insert(L"2", winrt::box_value(uint64_t(255)));
+    Require(winrt::make<Implementation::MatterCameraAudioStream>(fields).AudioCodec() == 255,
+            "Unknown allocated audio codec was coerced");
+    fields.Insert(L"0", winrt::box_value(uint64_t(UINT16_MAX)));
+    RequireHResult([&] { winrt::make<Implementation::MatterCameraAudioStream>(fields); }, E_BOUNDS,
+                   "Reserved audio ID was accepted");
+    fields.Insert(L"0", winrt::box_value(uint64_t(0)));
+    fields.Insert(L"4", winrt::box_value(uint64_t(UINT32_MAX) + 1));
+    RequireHResult([&] { winrt::make<Implementation::MatterCameraAudioStream>(fields); }, E_BOUNDS,
+                   "Audio sample-rate overflow was narrowed");
+    fields = Implementation::CameraCommandArguments(metadata);
+    fields.Remove(L"7");
+    RequireHResult([&] { winrt::make<Implementation::MatterCameraAudioStream>(fields); }, E_BOUNDS,
+                   "Missing audio transport count was defaulted");
+    for (auto const & value : { winrt::box_value(int64_t(2)), winrt::box_value(2.0), winrt::box_value(winrt::hstring(L"2")) })
+    {
+        fields = Implementation::CameraCommandArguments(metadata);
+        fields.Insert(L"3", value);
+        bool rejected = false;
+        try
+        {
+            winrt::make<Implementation::MatterCameraAudioStream>(fields);
+        }
+        catch (winrt::hresult_error const &)
+        {
+            rejected = true;
+        }
+        Require(rejected, "Signed, floating-point or text audio fields were coerced into unsigned protocol integers");
+    }
+    std::cout << "PASS generated audio TLV/capability lists, raw codecs, zero transport counts, and exact format validation\n";
+}
+
+void TestAudioAdapterAndControls()
+{
+    auto capabilities = winrt::make_self<Implementation::MatterCameraAudioCapabilities>();
+    capabilities->mCamera = AudioCamera();
+    capabilities->mMicrophone = AudioFormats();
+    Require(capabilities->SupportsListening(), "A compatible camera microphone was rejected");
+    for (auto camera : { AudioCamera(0x0143), AudioCamera(0x1234), AudioCamera(0x0142, 3),
+                         AudioCamera(0x0142, 2, false), AudioCamera(0x0142, 2, true, false) })
+    {
+        capabilities->mCamera = camera;
+        Require(!capabilities->SupportsListening(), "Non-camera, incompatible revision/composition or missing commands enabled audio");
+    }
+    capabilities->mCamera = AudioCamera();
+    capabilities->mBandwidth = 128000;
+    capabilities->mMicrophoneMuted = winrt::box_value(true).as<winrt::Windows::Foundation::IReference<bool>>();
+    auto volume = [](uint8_t value) { return winrt::box_value(value).as<winrt::Windows::Foundation::IReference<uint8_t>>(); };
+    capabilities->mMicrophoneVolume = volume(20);
+    capabilities->mMicrophoneMin = volume(10);
+    capabilities->mMicrophoneMax = volume(40);
+    auto arguments = Implementation::CameraAudioControlArguments(*capabilities, false, true, 30);
+    Require(arguments.first == Camera::Attributes::MicrophoneVolumeLevel::Id && arguments.second.Size() == 1 &&
+            winrt::unbox_value<uint8_t>(arguments.second.Lookup(L"value")) == 30, "Volume write changed remote mute or privacy");
+    RequireHResult([&] { Implementation::CameraAudioControlArguments(*capabilities, false, true, 41); },
+                   E_INVALIDARG, "Volume outside advertised bounds was accepted");
+    capabilities->mMicrophoneMin = volume(50);
+    RequireHResult([&] { Implementation::CameraAudioControlArguments(*capabilities, false, true, 30); },
+                   E_BOUNDS, "Reversed device volume bounds were accepted");
+    RequireHResult([&] { Implementation::CameraAudioControlArguments(*capabilities, true, false, 1); },
+                   E_NOTIMPL, "Missing speaker capability was defaulted");
+    capabilities->mPrivacy = true;
+    RequireHResult([&] { Implementation::CameraAudioControlArguments(*capabilities, false, false, 0); },
+                   E_ACCESSDENIED, "Privacy was bypassed by unmuting");
+    arguments = Implementation::CameraAudioControlArguments(*capabilities, false, false, 1);
+    Require(arguments.first == Camera::Attributes::MicrophoneMuted::Id &&
+            winrt::unbox_value<bool>(arguments.second.Lookup(L"value")), "Privacy prevented safe explicit mute");
+    auto stage = winrt::Matter::Windows::Controller::MatterCameraStage::Capabilities;
+    RequireHResult([&] { Implementation::RequireListening(*capabilities, stage); }, E_ACCESSDENIED,
+                   "Privacy enabled streaming");
+    auto request = AudioRequest();
+    Camera::Structs::AudioStreamStruct::Type metadata;
+    metadata.audioStreamID = 7;
+    metadata.streamUsage = request.streamUsage;
+    metadata.audioCodec = request.audioCodec;
+    metadata.channelCount = request.channelCount;
+    metadata.sampleRate = request.sampleRate;
+    metadata.bitRate = request.bitRate;
+    metadata.bitDepth = request.bitDepth;
+    metadata.referenceCount = 0;
+    auto streams = winrt::single_threaded_vector<winrt::Matter::Windows::Controller::MatterCameraAudioStream>({
+        winrt::make<Implementation::MatterCameraAudioStream>(Implementation::CameraCommandArguments(metadata)) }).GetView();
+    Implementation::ValidateCameraSelectedAudio(*capabilities, streams, 7);
+    RequireHResult([&] { Implementation::ValidateCameraSelectedAudio(*capabilities, streams, 8); },
+                   E_INVALIDARG, "Audio readback acquired a different ID");
+    std::cout << "PASS camera-only revision/command gate, external exact-ID selection and independent remote controls/privacy\n";
+}
+
+void TestAudioOwnership()
+{
+    Implementation::CameraAudioAllocationOwnership ownership;
+    const auto invalid = winrt::hresult_illegal_method_call().code();
+    RequireHResult([&] { ownership.StartRelease(1, 2, 7); }, invalid, "External audio stream was deallocated");
+    ownership.Reserve(1, 2);
+    RequireHResult([&] { ownership.Reserve(1, 2); }, invalid, "Concurrent audio allocation was accepted");
+    ownership.AllocationFailed(1, 2, true);
+    ownership.Reserve(1, 2);
+    ownership.Commit(1, 2, 7);
+    RequireHResult([&] { ownership.StartRelease(1, 3, 7); }, invalid, "Endpoint ownership was ignored");
+    RequireHResult([&] { ownership.StartRelease(2, 2, 7); }, invalid, "Peer ownership was ignored");
+    RequireHResult([&] { ownership.StartRelease(1, 2, 8); }, invalid, "Unowned audio ID was released");
+    ownership.StartRelease(1, 2, 7);
+    RequireHResult([&] { ownership.StartRelease(1, 2, 7); }, invalid, "Duplicate deallocation was dispatched");
+    ownership.ReleaseFinished(1, 2, false);
+    RequireHResult([&] { ownership.Reserve(1, 2); }, invalid, "Uncertain cleanup permitted a new allocation");
+    RequireHResult([&] { ownership.StartRelease(1, 2, 7); }, invalid, "Uncertain cleanup retried a possibly reused ID");
+    ownership.Reserve(2, 2);
+    ownership.AllocationFailed(2, 2, false);
+    RequireHResult([&] { ownership.Reserve(2, 2); }, invalid, "Unknown allocation outcome permitted a blind retry");
+    ownership.Reserve(3, 2);
+    ownership.Commit(3, 2, 0);
+    uint64_t released = 0;
+    auto pending = std::make_shared<Implementation::PendingCameraSession>([&](uint64_t handle) {
+        Require(released == 0, "Late session cancellation released twice");
+        released = handle;
+    });
+    pending->Cancel();
+    pending->Record(UINT64_MAX);
+    pending->Release();
+    pending->Release();
+    Require(released == UINT64_MAX, "Session cancellation narrowed a private 64-bit handle");
+    ownership.StartRelease(3, 2, 0);
+    ownership.ReleaseFinished(3, 2, true);
+    ownership.Reserve(3, 2);
+    ownership.Commit(3, 2, 0);
+    std::cout << "PASS audio ownership: known refusal, unknown outcome, duplicate release, peer/endpoint checks, and reused zero ID\n";
+}
+
+void TestTypedMediaSelections()
+{
+    namespace Controller = winrt::Matter::Windows::Controller;
+    for (int kind = 0; kind <= 3; ++kind)
+    {
+        for (int value : { -1, 0, int(UINT16_MAX) })
+        {
+            winrt::Windows::Foundation::IReference<uint16_t> id{ nullptr };
+            if (value >= 0)
+            {
+                id = winrt::box_value(uint16_t(value)).as<winrt::Windows::Foundation::IReference<uint16_t>>();
+            }
+            auto selection = [&] {
+                return winrt::make<Implementation::MatterCameraStreamSelection>(
+                    static_cast<Controller::MatterCameraStreamSelectionKind>(kind), id);
+            };
+            if ((kind <= 1 && value == -1) || (kind == 2 && value == 0))
+            {
+                auto result = selection();
+                Require(int(result.Kind()) == kind && bool(result.StreamId()) == (value >= 0),
+                        "Immutable selection lost kind or ID presence");
+            }
+            else
+            {
+                RequireHResult(selection, E_INVALIDARG, "An invalid selection kind/nullable ID combination was accepted");
+            }
+        }
+    }
+    std::cout << "PASS typed Absent/AutoSelect/ExplicitId constructors, zero IDs and invalid/reserved combinations\n";
+}
 } // namespace
 
 int main()
@@ -289,7 +570,12 @@ int main()
         TestPreDispatchFailures();
         TestInvalidStructureTag();
         TestAllocationRejectionResponses();
+        TestAllocationRejectionResponses(Camera::Commands::AudioStreamAllocate::Id, Camera::Commands::AudioStreamAllocateResponse::Id);
         TestZeroReferenceAllocatedMetadata();
+        TestAudioTlvAndMetadata();
+        TestAudioAdapterAndControls();
+        TestAudioOwnership();
+        TestTypedMediaSelections();
     }
     catch (winrt::hresult_error const & error)
     {

@@ -122,6 +122,8 @@
         <ActivatableClass ActivatableClassId="Matter.Windows.Controller.MatterCameraIceCandidate" ThreadingModel="both" />
         <ActivatableClass ActivatableClassId="Matter.Windows.Controller.MatterCameraIceServer" ThreadingModel="both" />
         <ActivatableClass ActivatableClassId="Matter.Windows.Controller.MatterCameraVideoStreamOptions" ThreadingModel="both" />
+        <ActivatableClass ActivatableClassId="Matter.Windows.Controller.MatterCameraAudioStreamOptions" ThreadingModel="both" />
+        <ActivatableClass ActivatableClassId="Matter.Windows.Controller.MatterCameraStreamSelection" ThreadingModel="both" />
       </InProcessServer>
     </Extension>
   </Extensions>

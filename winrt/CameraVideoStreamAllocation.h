@@ -12,11 +12,12 @@
 
 namespace winrt::Matter::Windows::Controller::implementation {
 
-// Own the reference until the asynchronous result is delivered, including cancellation at completion.
-class PendingCameraVideoStream : public std::enable_shared_from_this<PendingCameraVideoStream>
+// Own cleanup until the asynchronous result is delivered, including cancellation at completion.
+template <typename Identifier>
+class PendingCameraRelease : public std::enable_shared_from_this<PendingCameraRelease<Identifier>>
 {
 public:
-    explicit PendingCameraVideoStream(std::function<void(uint16_t)> release) : mRelease(std::move(release)) {}
+    explicit PendingCameraRelease(std::function<void(Identifier)> release) : mRelease(std::move(release)) {}
 
     void Cancel()
     {
@@ -28,11 +29,11 @@ public:
         }
         if (release)
         {
-            ReleaseCanceled(shared_from_this());
+            ReleaseCanceled(this->shared_from_this());
         }
     }
 
-    void Record(uint16_t stream)
+    void Record(Identifier stream)
     {
         bool canceled = false;
         {
@@ -42,7 +43,7 @@ public:
         }
         if (canceled)
         {
-            ReleaseCanceled(shared_from_this());
+            ReleaseCanceled(this->shared_from_this());
         }
     }
 
@@ -63,7 +64,7 @@ public:
             return;
         }
         mReleaseStarted = true;
-        const uint16_t stream = *mStream;
+        const Identifier stream = *mStream;
         lock.unlock();
         std::exception_ptr failure;
         try
@@ -90,7 +91,7 @@ public:
     }
 
 private:
-    static winrt::fire_and_forget ReleaseCanceled(std::shared_ptr<PendingCameraVideoStream> owner)
+    static winrt::fire_and_forget ReleaseCanceled(std::shared_ptr<PendingCameraRelease> owner)
     {
         co_await winrt::resume_background();
         try
@@ -99,22 +100,25 @@ private:
         }
         catch (winrt::hresult_error const & error)
         {
-            ChipLogError(Controller, "Canceled video allocation cleanup failed (HRESULT 0x%08lx); remote ownership is uncertain.",
+            ChipLogError(Controller, "Canceled camera allocation cleanup failed (HRESULT 0x%08lx); remote ownership is uncertain.",
                          static_cast<unsigned long>(error.code()));
         }
         catch (std::exception const &)
         {
-            ChipLogError(Controller, "Canceled video allocation cleanup failed; remote ownership is uncertain.");
+            ChipLogError(Controller, "Canceled camera allocation cleanup failed; remote ownership is uncertain.");
         }
     }
 
-    std::function<void(uint16_t)> mRelease;
+    std::function<void(Identifier)> mRelease;
     std::mutex mMutex;
     std::condition_variable mFinished;
-    std::optional<uint16_t> mStream;
+    std::optional<Identifier> mStream;
     std::exception_ptr mFailure;
     bool mCanceled = false;
     bool mReleaseStarted = false;
     bool mReleaseFinished = false;
 };
+using PendingCameraStream = PendingCameraRelease<uint16_t>;
+using PendingCameraVideoStream = PendingCameraStream;
+using PendingCameraSession = PendingCameraRelease<uint64_t>;
 }
