@@ -5,6 +5,15 @@ await BaselineAcceptance.RunAsync();
 await CameraAcceptance.RunAsync();
 #endif
 Console.WriteLine("PASS baseline package projection, constructors, enumeration and closed-controller commissioning failure");
+if (args.Length == 2 && args[0] == "--result")
+{
+    using var stream = File.Create(args[1]);
+    using var writer = new System.Text.Json.Utf8JsonWriter(stream);
+    writer.WriteStartObject();
+    writer.WriteBoolean("succeeded", true);
+    writer.WriteString("packageFullName", Windows.ApplicationModel.Package.Current.Id.FullName);
+    writer.WriteEndObject();
+}
 
 internal static class BaselineAcceptance
 {
@@ -66,6 +75,22 @@ internal static class BaselineAcceptance
                 new MatterNetworkInterfaceSelection(MatterNetworkInterfaceSelectionMode.Automatic, 0));
             Require(!result.Succeeded && result.Node is null && result.Outcome == MatterCommissioningOutcome.Failed &&
                 !string.IsNullOrWhiteSpace(result.DiagnosticMessage), "Closed controller did not fail explicitly");
+            var preferred = await commissioning.CommissionBleAsync(parameters,
+                new MatterNetworkInterfaceSelection(MatterNetworkInterfaceSelectionMode.PreferSpecifiedInterface, ulong.MaxValue));
+            Require(!preferred.Succeeded && preferred.Node is null,
+                "An unavailable preferred interface produced synthetic commissioning success");
+            bool requiredRejected = false;
+            try
+            {
+                await commissioning.CommissionBleAsync(parameters,
+                    new MatterNetworkInterfaceSelection(MatterNetworkInterfaceSelectionMode.RequireSpecifiedInterface, ulong.MaxValue));
+            }
+            catch (Exception exception) when (exception.HResult == unchecked((int)0x80070057) &&
+                exception.Message.Contains("PreferredInterfaceNotFound", StringComparison.Ordinal))
+            {
+                requiredRejected = true;
+            }
+            Require(requiredRejected, "Require mode did not reject an unavailable interface before dispatch");
         }
         finally
         {

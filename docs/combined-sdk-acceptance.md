@@ -30,6 +30,24 @@ different-revision build is development evidence, not a release build.
 Version `.1` is superseded: its provenance repeated architecture entries.
 It is retained unchanged and must not be used as the acceptance artifact.
 
+The package was built from clean SDK commit
+`10f17e29476c938826430e66ddd2b9fb14f1f817`. Subsequent branch changes add consumer
+activation/isolation tests and migration evidence, not different component
+metadata or DLLs. The package is published to the local `artifacts` NuGet feed;
+no remote release was published while preview.14 and hardware gates remain open.
+
+| Artifact | SHA256 |
+| --- | --- |
+| `Matter.Windows.Controller.0.2.0-camera-commissioning.2.nupkg` | `919859F9BBA188886BFE900EBBB27DC707768D7C6098C7D638163334D0EEFAA1` |
+| x64 DLL | `BDB5079E1E45B3FA9BEA84201BC2473D88B6036C07ECE93C9DCCEDB06444B6BB` |
+| ARM64 DLL | `2980B993F918386352472582D7578D377E4AA6DAA54F033BAA5FFCC7BA18E6B3` |
+| x64/reference WinMD | `5F4C501A2DC4DA8C4A611B4A0E77AE0C245C73AF60C463595A18C1FBC91BF8DC` |
+| ARM64 WinMD | `786D793690E46E02805EEE49EBC6B579E9001B17DFFA3753C37EE89BB717821E` |
+
+Architecture WinMD bytes can differ; their ordered interface/activation
+contracts were compared in both directions before packaging. Each architecture's
+exact WinMD is also included beside its DLL under `runtimes`.
+
 ## Acceptance commands
 
 ```powershell
@@ -41,6 +59,9 @@ It is retained unchanged and must not be used as the acceptance artifact.
     -BaselinePackage <actual-published-preview.14.nupkg> `
     -CombinedPackage .\artifacts\Matter.Windows.Controller.0.2.0-camera-commissioning.2.nupkg `
     -OutputDirectory .\out\preview14-acceptance -MatterSdkRoot .\matterforwindows -Run
+.\tools\test-installed-consumer.ps1 `
+    -PublishedConsumer .\out\combined-consumer-x64\CombinedConsumer\publish `
+    -OutputDirectory .\out\combined-installed-package
 ```
 
 Each package-consumer run requires a fresh intermediate/output directory.
@@ -56,22 +77,32 @@ The strict baseline gate requires package identity/version
 `Matter.Windows.Controller/0.1.0-preview.14`. It persists hashes, decompiled
 metadata and comparison results, including interface UUIDs and ordered methods.
 The older preview.10 diagnostic is explicitly provisional.
+CI runs package consumers for both architectures. Strict preview.14 acceptance
+requires a workflow-dispatch baseline URL and SHA256; without them the workflow
+explicitly records release acceptance as blocked. Older CI baselines are not
+promoted to preview.14 evidence.
 
 ## Validation matrix
 
 | Gate | Status | Evidence or limitation |
 | --- | --- | --- |
 | Actual preview.14 API/ABI | BLOCKED | Package not found in local caches/checkouts, NuGet mirror, or the checked GitHub releases. Exact published WinMD is required; do not regenerate a substitute. |
-| Preview.10 diagnostic | PASS, provisional | All baseline declarations preserved; x64/ARM64 WinMD equivalent; activation exports unchanged. Does not establish preview.14 compatibility. |
-| x64 and ARM64 component builds | PASS | MSVC 14.51.36231, Windows SDK 10.0.26100.0, declared native revision. ARM64 component is build-only evidence. |
+| Preview.10 diagnostic | PASS, provisional | 82 baseline declarations preserved against 143 current declarations; x64/ARM64 WinMD equivalent; activation exports unchanged. Persistent output: `artifacts\combined-preview10-provisional`. Does not establish preview.14 compatibility. |
+| x64 and ARM64 component builds | PASS | MSVC toolset 14.51.36231/compiler 19.51.36257.0, Windows SDK 10.0.26100.0, declared native revision. ARM64 is build-only evidence. |
 | Camera discovery/TLV/capability/ownership | PASS, x64 execution | Includes raw malformed capabilities, zero IDs/reference counts, explicit media selection, correlated refusals and ownership cleanup. |
 | Commissioning evidence regression | PASS, x64 execution | Progress cannot synthesize completion; failed stage does not overwrite last completed stage; native error/stage survive failure. |
 | Receiver tests | PASS, 42 synthetic tests | Permission denial/revocation, late capture cleanup, bounded sender waits, routing and redacted evidence. Not physical sound acceptance. |
-| NuGet baseline/combined consumers | Pending | Build and activation runs must use the uniquely versioned package. |
-| NativeAOT and installed deployment | Pending | Distinguish executed x64 and build-only ARM64. |
-| Real native-host/WebView2 loopback | Pending | Synthetic media test through actual host; not a physical camera test. |
+| Actual OS microphone consent/revocation | UNTESTED | No live microphone consent session was opened. Synthetic denial/revocation tests are not an OS permission acceptance claim. |
+| NuGet baseline/combined consumers | PASS | Original camera.22 package reproduced missing commissioning types. Combined package passes with exact consumed WinMD/DLL hash checks and isolated projections. x64 executed; ARM64 built only. |
+| NativeAOT | PASS | Baseline and combined x64 fixtures executed; ARM64 fixtures compiled only. Camera capability/profile/ownership NativeAOT regression fixture also executed on x64. |
+| Installed deployment | PASS, x64 development registration | Combined consumer ran with the expected installed Windows package identity and native camera/commissioning activation. Test registration removed afterward. Signed production deployment and ARM64 installation remain untested. |
+| Real native-host/WebView2 loopback | PASS, x64 synthetic media | Video-only, listening and synthetic outgoing audio traversed production host routes and cleaned up tracks/peers. No microphone permission request; physical audibility explicitly false. Result: `out\combined-webview-final\result.json`. |
+| Repository sample host builds and MSIX | PASS | x64/ARM64 WinUI host builds retain real structured commissioning and add the camera backend. x64 MSIX validates all camera and commissioning activation entries and the package-matched DLL. One pre-existing toolchain warning: no `mspdbcmf.exe` symbols package. |
+| External product host integration | UNTESTED | No external host checkout/build command was supplied; sample acceptance does not establish another product's build or device behavior. |
+| Interface enumeration and negative modes | PASS, x64 execution | Typed enumeration, enum values and constructors; Automatic/Prefer failures on a closed controller; Require rejects an unavailable interface before dispatch. Not successful operational routing evidence. |
 | Automatic/Prefer/Require real commissioning | UNTESTED | No BLE target/credentials or Ethernet-plus-Wi-Fi test topology supplied. Negative interface validation and enumeration are not successful routing evidence. |
-| Wi-Fi/Thread progress, timeout/cancellation | PARTIAL | Source and negative regressions only; hardware operation matrix remains open. |
+| Wi-Fi/Thread progress, timeout/cancellation | PARTIAL | Both credential types activate; native evidence and cancellation-before-dispatch regressions pass. Real provisioning, in-flight cancellation and operational timeouts remain hardware gates. |
+| Full preview.14 commissioning stage/result semantics | UNVERIFIED | Reference implementation groups operational discovery/CASE in native stages; exact published contract and subsequent fixes must be checked before claiming complete stage behavior. |
 | Existing paired-node reads/subscriptions/commands and storage | UNTESTED | Requires real consumer storage and paired device; no reset/re-pairing performed or required by this additive design. |
 | Physical G350 video/listening | Earlier evidence only | Worked in prior validation; not rerun against this combined package. |
 | 24-bit Opus allocation/release | Earlier evidence only | Previously succeeded; synthetic source-depth cases retained. |
@@ -80,6 +111,8 @@ The older preview.10 diagnostic is explicitly provisional.
 The related `matter-camera-audio-spec.md` was not found in the available
 checkouts. No physical acceptance or certification claim is inferred from
 synthetic tests.
+Machine-readable summary and copied loopback/installed results are in
+`artifacts\combined-sdk-validation`.
 
 ## Migration
 

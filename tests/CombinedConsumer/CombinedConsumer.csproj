@@ -4,6 +4,7 @@
     <TargetFramework>net8.0-windows10.0.26100.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
+    <DefaultItemExcludes>$(DefaultItemExcludes);obj\**;bin\**</DefaultItemExcludes>
     <DefineConstants>$(DefineConstants);COMBINED_CONSUMER</DefineConstants>
     <CsWinRTIncludes>Matter.Windows.Controller</CsWinRTIncludes>
     <CsWinRTAotWarningLevel>2</CsWinRTAotWarningLevel>

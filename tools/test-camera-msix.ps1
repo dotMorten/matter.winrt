@@ -35,6 +35,13 @@ try {
         if ("Matter.Windows.Controller.$type" -notin $registered) {
             throw "Camera MSIX does not register $type for native WinRT activation."
         }
+        foreach ($type in @("MatterControllerCommissioning", "MatterNetworkInterfaceProvider", "MatterNetworkInterfaceSelection",
+                            "MatterControllerNetworkCommissioning", "MatterControllerRecovery",
+                            "BleNetworkCommissioningParameters", "WiFiNetworkCredentials", "ThreadNetworkCredentials")) {
+            if ("Matter.Windows.Controller.$type" -notin $registered) {
+                throw "Combined SDK MSIX does not register $type for native WinRT activation."
+            }
+        }
     }
     if (-not $manifest.SelectSingleNode("//*[local-name()='DeviceCapability'][@Name='microphone']")) {
         throw "Camera MSIX does not declare microphone capability for explicit push-to-talk."

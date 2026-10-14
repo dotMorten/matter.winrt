@@ -6,6 +6,7 @@
     <PublishAot>true</PublishAot>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
+    <DefaultItemExcludes>$(DefaultItemExcludes);obj\**;bin\**</DefaultItemExcludes>
     <DefineConstants>$(DefineConstants);MATTER_CAMERA_DEVELOPMENT</DefineConstants>
     <CsWinRTIncludes>Matter.Windows.Controller</CsWinRTIncludes>
     <CsWinRTAotWarningLevel>2</CsWinRTAotWarningLevel>

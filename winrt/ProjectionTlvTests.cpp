@@ -138,6 +138,18 @@ void TestPreDispatchFailures()
     options.StoragePath(storage.wstring());
     auto runtime = Implementation::ControllerRuntime::Create(options);
     auto close = chip::ScopeExit([&] { runtime->Close(); });
+    bool canceled = false;
+    try
+    {
+        runtime->Commission(1, 20202021, 3840, true, {}, std::nullopt, {}, chip::NullOptional, {},
+                            std::make_shared<std::atomic_bool>(true));
+    }
+    catch (winrt::hresult_canceled const &)
+    {
+        canceled = true;
+    }
+    Require(canceled && runtime->CommissionedNodes().empty(),
+            "Canceled commissioning dispatched or created a commissioned node");
     runtime->Close();
     winrt::Windows::Foundation::Collections::PropertySet malformed;
     malformed.Insert(L"256", winrt::box_value(uint64_t(1)));
@@ -159,6 +171,7 @@ void TestPreDispatchFailures()
             result.Failure().Category() == Controller::MatterCameraFailureCategory::InvalidState,
             "Closed-controller validation was reported as a dispatched allocation");
     std::cout << "PASS local encoding and closed-controller failures remain pre-dispatch validation failures\n";
+    std::cout << "PASS commissioning cancellation before dispatch leaves node storage unchanged\n";
 }
 
 void TestInvalidStructureTag()
