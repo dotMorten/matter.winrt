@@ -13,6 +13,11 @@ internal sealed class CameraReceiverMediaTestWindow : Window
     private readonly string resultPath;
     private bool completed;
     private int permissionRequests;
+    private readonly HashSet<string> routed = [];
+    private string token = "";
+    private bool listening;
+    private bool talking;
+    private bool captureAuthorized;
 
     internal CameraReceiverMediaTestWindow(string resultPath)
     {
@@ -85,14 +90,70 @@ internal sealed class CameraReceiverMediaTestWindow : Window
             }
             using var message = JsonDocument.Parse(args.WebMessageAsJson);
             var root = message.RootElement;
-            if (root.GetProperty("type").GetString() == "loopback-result")
+            string? type = root.GetProperty("type").GetString();
+            if (type == "loopback-command")
             {
+                var command = root.GetProperty("command");
+                if (command.GetProperty("type").GetString() == "start")
+                {
+                    token = command.GetProperty("token").GetString() ?? "";
+                    listening = command.GetProperty("listen").GetBoolean();
+                    talking = command.GetProperty("talk").GetBoolean();
+                    captureAuthorized = false;
+                }
+                if (command.GetProperty("token").GetString() != token)
+                {
+                    throw new InvalidOperationException("Stale loopback host command.");
+                }
+                sender.PostWebMessageAsJson(command.GetRawText());
+                return;
+            }
+            if (type == "loopback-result")
+            {
+                if (!routed.IsSupersetOf(new[] { "media", "audio", "capture-request", "capture-release", "talk-diagnostics" }))
+                {
+                    throw new InvalidOperationException("Actual host/WebView media routing coverage incomplete.");
+                }
                 await CompleteAsync(root.GetProperty("succeeded").GetBoolean(),
                     root.GetProperty("message").GetString() ?? "Missing test result.",
                     root.GetProperty("details").Clone());
             }
             else
             {
+                if (root.GetProperty("token").GetString() != token)
+                {
+                    return;
+                }
+                if (await CameraReceiverMediaBridge.RouteAsync(root,
+                    _ => Task.CompletedTask,
+                    press =>
+                    {
+                        if (!talking)
+                        {
+                            throw new InvalidOperationException("Synthetic capture authorization without explicit talk mode.");
+                        }
+                        captureAuthorized = true;
+                        sender.PostWebMessageAsJson(JsonSerializer.Serialize(new { type = "capture-authorized", token, press }));
+                        return Task.CompletedTask;
+                    },
+                    () => captureAuthorized = false,
+                    state =>
+                    {
+                        if (!listening || state is "capture-on" or "outgoing" or "input-signal-observed" && !captureAuthorized)
+                        {
+                            throw new InvalidOperationException("Actual host rejected unexpected audio/capture.");
+                        }
+                    },
+                    _ =>
+                    {
+                        if (!talking || !captureAuthorized)
+                        {
+                            throw new InvalidOperationException("Actual host rejected unauthorized talkback evidence.");
+                        }
+                    }))
+                {
+                    routed.Add(type!);
+                }
                 await browser.ExecuteScriptAsync($"window.cameraMediaTest.accept({args.WebMessageAsJson});");
             }
         }
@@ -115,7 +176,7 @@ internal sealed class CameraReceiverMediaTestWindow : Window
         {
             await File.WriteAllTextAsync(resultPath, JsonSerializer.Serialize(new
             {
-                succeeded, message, details, permissionRequests, synthetic = true,
+                succeeded, message, details, permissionRequests, hostRoutes = routed.ToArray(), synthetic = true,
                 physicalAudibilityValidated = false
             }));
         }

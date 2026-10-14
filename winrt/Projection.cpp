@@ -3611,18 +3611,15 @@ MatterCameraAudioFormatCapabilities::MatterCameraAudioFormatCapabilities(
     mCodecs = single_threaded_vector(DescriptorNumericList<uint8_t>(list(L"1"))).GetView();
     mRates = single_threaded_vector(DescriptorNumericList<uint32_t>(list(L"2"))).GetView();
     mDepths = single_threaded_vector(DescriptorNumericList<uint8_t>(list(L"3"))).GetView();
-    if (mChannels == 0 || mChannels > 8 || mCodecs.Size() == 0 || mRates.Size() == 0 || mDepths.Size() == 0 ||
-        std::find(mRates.begin(), mRates.end(), uint32_t(0)) != mRates.end() ||
-        std::find(mDepths.begin(), mDepths.end(), uint8_t(0)) != mDepths.end())
-    {
-        throw hresult_error(E_BOUNDS, L"Audio capabilities contain invalid channel, sample-rate, or bit-depth bounds.");
-    }
+    // Preserve advertised values, including unusable entries, for caller diagnostics.
+    // Request validation never substitutes a format for a malformed entry.
 }
 
 void MatterCameraAudioFormatCapabilities::Validate(
     chip::app::Clusters::CameraAvStreamManagement::Commands::AudioStreamAllocate::Type const & request) const
 {
-    if (request.channelCount > mChannels ||
+    if (mChannels == 0 || mChannels > 8 || request.channelCount == 0 || request.channelCount > mChannels ||
+        request.sampleRate == 0 || request.bitDepth == 0 ||
         std::find(mCodecs.begin(), mCodecs.end(), static_cast<uint8_t>(request.audioCodec)) == mCodecs.end() ||
         std::find(mRates.begin(), mRates.end(), request.sampleRate) == mRates.end() ||
         std::find(mDepths.begin(), mDepths.end(), request.bitDepth) == mDepths.end())
@@ -4074,12 +4071,27 @@ Controller::MatterCameraAudioCapabilities ReadCameraAudioCapabilities(
     auto read = [&](uint32_t attribute) { return runtime->ReadAttribute(node, endpoint, Id, attribute, canceled, deadline); };
     if ((features & uint32_t(Feature::kAudio)) != 0 && CameraAdvertises(attributes, Attributes::MicrophoneCapabilities::Id))
     {
-        result->mMicrophone = winrt::make<implementation::MatterCameraAudioFormatCapabilities>(
-            read(Attributes::MicrophoneCapabilities::Id));
+        auto fields = read(Attributes::MicrophoneCapabilities::Id);
+        try
+        {
+            result->mMicrophone = winrt::make<implementation::MatterCameraAudioFormatCapabilities>(fields);
+        }
+        catch (hresult_error const & error)
+        {
+            throw hresult_error(error.code(), L"MicrophoneCapabilities (attribute 7): " + error.message());
+        }
     }
     if ((features & uint32_t(Feature::kSpeaker)) != 0 && CameraAdvertises(attributes, Attributes::SpeakerCapabilities::Id))
     {
-        result->mSpeaker = winrt::make<implementation::MatterCameraAudioFormatCapabilities>(read(Attributes::SpeakerCapabilities::Id));
+        auto fields = read(Attributes::SpeakerCapabilities::Id);
+        try
+        {
+            result->mSpeaker = winrt::make<implementation::MatterCameraAudioFormatCapabilities>(fields);
+        }
+        catch (hresult_error const & error)
+        {
+            throw hresult_error(error.code(), L"SpeakerCapabilities (attribute 8): " + error.message());
+        }
     }
     auto number = [&](uint32_t attribute) -> Windows::Foundation::IReference<uint8_t> {
         if (!CameraAdvertises(attributes, attribute))
@@ -4258,6 +4270,9 @@ bool MatterCameraAudioCapabilities::SupportsListening() const
 {
     using Codec = chip::app::Clusters::CameraAvStreamManagement::AudioCodecEnum;
     return IsCameraAudioAdapter(mCamera) && mMicrophone && CameraOffersAudio(mCamera) &&
+        mMicrophone.MaximumChannels() >= 1 && mMicrophone.MaximumChannels() <= 8 &&
+        std::any_of(mMicrophone.SampleRates().begin(), mMicrophone.SampleRates().end(),
+            [](uint32_t rate) { return rate != 0; }) &&
         (CameraAdvertises(mMicrophone.Codecs(), static_cast<uint8_t>(Codec::kOpus)) ||
          CameraAdvertises(mMicrophone.Codecs(), static_cast<uint8_t>(Codec::kAacLc))) &&
         std::any_of(mMicrophone.BitDepths().begin(), mMicrophone.BitDepths().end(),

@@ -774,7 +774,7 @@
       <summary>Immutable selection for one medium. Only ExplicitId accepts a required nonreserved ID; zero is valid. Absent and AutoSelect require a null ID.</summary>
     </member>
     <member name="T:Matter.Windows.Controller.MatterCameraAudioFormatCapabilities">
-      <summary>Preserves advertised codec, channel, sample-rate and bit-depth values. Unknown codecs remain explicit; intersect with the actual media engine before allocation.</summary>
+      <summary>Preserves raw advertised codec, channel, sample-rate and bit-depth values, including unusable entries such as zero. Tolerant negotiation may select only usable advertised formats, never replacements; all-invalid lists remain visible but are not eligible. Source allocation depth is not browser PCM precision.</summary>
     </member>
     <member name="T:Matter.Windows.Controller.MatterCameraAudioCapabilities">
       <summary>Camera-specific protocol capability snapshot, raw audio formats, nullable advertised remote mute/volume/talk state, privacy and bandwidth. Does not prove sound or authorize local capture.</summary>

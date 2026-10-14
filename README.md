@@ -149,10 +149,21 @@ cluster composition, and is not sufficient authorization for this audio adapter.
 sample-rate and bit-depth lists, nullable advertised remote mute/volume bounds
 and TwoWayTalkSupport, camera cluster metadata, privacy and network bandwidth.
 Missing optional controls remain null; unknown codec/talk values are preserved.
+Numeric capability lists also retain unusable entries (for example `[24,0]`)
+instead of inventing a replacement or discarding the raw evidence. The tolerant
+policy permits only usable, advertised entries: zero rates/depths are never
+selectable, and an all-invalid microphone does not support listening. Invalid or
+absent speaker formats gate talkback independently, not otherwise valid listening.
+The sample reports direction, attribute, field and raw offending values as
+warnings. Wrong TLV types, missing required fields and numeric overflow remain
+errors with microphone/speaker attribute context.
 `SupportsListening` identifies the candidate audio protocol path with a known
 codec, **not media-engine compatibility or audible playback**. Intersect these
 formats with the actual media engine before allocating; TwoWayTalkSupport alone
 does not establish bidirectional audio or authorize microphone capture.
+Camera allocation bit depth describes source metadata, not browser-managed PCM
+precision. Opus RTP negotiates a compressed codec and a 48 kHz clock; receiving a
+24-bit allocation does not assert 24-bit browser capture or camera speaker output.
 
 `MatterCameraAudioStreamOptions` deliberately has no usable default profile.
 Supply a negotiated Opus or AAC-LC codec, 1-8 channels, nonzero sample rate and

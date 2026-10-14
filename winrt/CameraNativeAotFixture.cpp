@@ -32,7 +32,7 @@ extern "C" __declspec(dllexport) int32_t __stdcall GetCameraAudioFixture(int32_t
         {
             *value = winrt::detach_abi(stream);
         }
-        else if (variant == 1 || (variant >= 4 && variant <= 8))
+        else if (variant == 1 || (variant >= 4 && variant <= 13))
         {
             fields.Clear();
             fields.Insert(L"0", winrt::box_value(uint64_t(2)));
@@ -52,6 +52,25 @@ extern "C" __declspec(dllexport) int32_t __stdcall GetCameraAudioFixture(int32_t
                 fields.Insert(L"2", winrt::single_threaded_vector<winrt::Windows::Foundation::IInspectable>({
                     winrt::box_value(uint64_t(8000)), winrt::box_value(uint64_t(12000)), winrt::box_value(uint64_t(16000)),
                     winrt::box_value(uint64_t(24000)), winrt::box_value(uint64_t(48000)) }));
+                if (variant >= 9)
+                {
+                    fields.Insert(L"0", winrt::box_value(uint64_t(8)));
+                    if (variant <= 10)
+                    {
+                        fields.Insert(L"2", winrt::single_threaded_vector<winrt::Windows::Foundation::IInspectable>({
+                            winrt::box_value(uint64_t(48000)), winrt::box_value(uint64_t(32000)) }));
+                    }
+                    std::vector<winrt::Windows::Foundation::IInspectable> depths{ winrt::box_value(uint64_t(24)) };
+                    if (variant == 9)
+                    {
+                        depths.push_back(winrt::box_value(uint64_t(0)));
+                    }
+                    if (variant == 12)
+                    {
+                        depths = { winrt::box_value(uint64_t(0)) };
+                    }
+                    fields.Insert(L"3", winrt::single_threaded_vector(std::move(depths)));
+                }
                 caps->mMicrophone = winrt::make<Implementation::MatterCameraAudioFormatCapabilities>(fields);
                 auto descriptor = winrt::make<Implementation::MatterEndpointDescriptor>(
                     uint16_t(2), std::vector<uint16_t>{},
@@ -72,6 +91,16 @@ extern "C" __declspec(dllexport) int32_t __stdcall GetCameraAudioFixture(int32_t
                     std::vector<uint32_t>{ Provider::Commands::ProvideOfferResponse::Id });
                 caps->mCamera = winrt::make<Implementation::MatterCameraCapabilities>(descriptor, management, transport);
                 caps->mSpeaker = caps->mMicrophone;
+                if (variant == 11)
+                {
+                    fields.Insert(L"3", winrt::single_threaded_vector<winrt::Windows::Foundation::IInspectable>({
+                        winrt::box_value(uint64_t(0)) }));
+                    caps->mSpeaker = winrt::make<Implementation::MatterCameraAudioFormatCapabilities>(fields);
+                }
+                if (variant == 13)
+                {
+                    caps->mSpeaker = nullptr;
+                }
                 caps->mTalk = winrt::box_value(uint8_t(variant == 7 ? 1 : 2)).as<winrt::Windows::Foundation::IReference<uint8_t>>();
                 caps->mPrivacy = variant == 8;
                 caps->mBandwidth = 128000000;

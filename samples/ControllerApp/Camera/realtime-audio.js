@@ -9,7 +9,10 @@ class RealtimeAudio {
             codecs: receive.length && send.length ? ["audio/opus"] : [],
             // Opus uses a 48 kHz RTP clock independently of the encoder's PCM sample rate.
             sampleRates: [48000, 24000, 16000, 12000, 8000],
-            bitDepths: [16],
+            // Compressed Opus carries no PCM bit-depth field. These describe source
+            // metadata we can receive; browser capture precision stays browser-managed.
+            sourceBitDepths: [8, 16, 24, 32],
+            pcmPrecision: "browser-managed",
             maximumChannels: 2
         };
     }
@@ -36,7 +39,7 @@ class RealtimeAudio {
         if (!this.closed || !profile || profile.codec !== "audio/opus" ||
             !RealtimeAudio.formats(talk).codecs.includes(profile.codec) ||
             !RealtimeAudio.formats(talk).sampleRates.includes(profile.sampleRate) ||
-            profile.bitDepth !== 16 || !Number.isInteger(profile.channels) ||
+            !RealtimeAudio.formats(talk).sourceBitDepths.includes(profile.bitDepth) || !Number.isInteger(profile.channels) ||
             profile.channels < 1 || profile.channels > 2 || !Number.isInteger(profile.bitRate) ||
             profile.bitRate < 6000 || profile.bitRate > 128000) {
             throw new Error("No compatible audio engine format.");
@@ -159,9 +162,11 @@ class RealtimeAudio {
             }
             const statistics = await this.peer.getStats();
             this.outboundBaseline = new Map();
+            this.outboundByteBaseline = new Map();
             for (const [id, report] of statistics) {
                 if (report.type === "outbound-rtp" && report.kind === "audio") {
                     this.outboundBaseline.set(id, report.packetsSent ?? 0);
+                    this.outboundByteBaseline.set(id, report.bytesSent ?? 0);
                 }
             }
             if (!active()) {
@@ -219,6 +224,10 @@ class RealtimeAudio {
             this.captureEnabled = true;
             this.captureAttached = false;
             this.sent = false;
+            this.inputSelection = deviceId ? "explicit" : "default";
+            this.inputSignalObserved = false;
+            this.inputEnergy = new Map();
+            this.outboundCounters = new Map();
             this.report("capture-on");
             const parameters = this.sender.getParameters();
             if (!parameters.encodings?.length) {
@@ -236,6 +245,7 @@ class RealtimeAudio {
                 return;
             }
             this.captureAttached = true;
+            this.reportCaptureEvidence(0, 0, 0, false, "unknown");
         } catch (error) {
             if (active()) {
                 this.stopCapture();
@@ -278,6 +288,26 @@ class RealtimeAudio {
         return this.senderUpdates.size;
     }
 
+    reportCaptureEvidence(energyDelta, packetsDelta, bytesDelta, signalAvailable, codec) {
+        if (!this.captureEnabled || !this.captureAttached || this.sender?.track !== this.capture) {
+            return;
+        }
+        const encoding = this.sender.getParameters().encodings?.[0];
+        this.report("diagnostics", null, {
+            captureEnabled: true,
+            inputSelection: this.inputSelection,
+            inputSignalAvailable: signalAvailable,
+            inputSignalObserved: this.inputSignalObserved,
+            inputEnergyDelta: energyDelta,
+            direction: this.transceiver.currentDirection ?? "unnegotiated",
+            codec,
+            encodingActive: !!encoding && encoding.active !== false,
+            trackAttached: this.capture?.readyState === "live",
+            packetsDelta, bytesDelta,
+            cameraPlayback: "unverified"
+        });
+    }
+
     replaceTrack(sender, track) {
         const updates = this.senderUpdates;
         if (updates.size >= 8) {
@@ -297,6 +327,7 @@ class RealtimeAudio {
         }
         this.inspecting = true;
         const peer = this.peer;
+        const captureGeneration = this.generation;
         try {
             const statistics = await this.peer.getStats();
             if (this.closed || this.peer !== peer) {
@@ -309,7 +340,30 @@ class RealtimeAudio {
             }
             let decodedProgress = false;
             const samples = new Map();
+            let energyDelta = 0;
+            let signalAvailable = false;
+            let inputNonSilent = false;
+            let packetsDelta = 0;
+            let bytesDelta = 0;
+            let sendCodec = "unknown";
+            const capturing = captureGeneration === this.generation && this.captureEnabled && this.captureAttached &&
+                this.sender.track === this.capture;
             for (const [id, report] of statistics) {
+                if (capturing && report.type === "media-source" && report.kind === "audio" &&
+                    report.trackIdentifier === this.capture.id) {
+                    if (Number.isFinite(report.totalAudioEnergy) && report.totalAudioEnergy >= 0) {
+                        signalAvailable = true;
+                        const previous = this.inputEnergy.get(id);
+                        const delta = previous === undefined ? 0 : Math.max(0, report.totalAudioEnergy - previous);
+                        energyDelta += delta;
+                        inputNonSilent ||= delta > 1e-8;
+                        this.inputEnergy.set(id, report.totalAudioEnergy);
+                    }
+                    if (Number.isFinite(report.audioLevel) && report.audioLevel >= 0 && report.audioLevel <= 1) {
+                        signalAvailable = true;
+                        inputNonSilent ||= report.audioLevel > 0.0001;
+                    }
+                }
                 if (report.type === "inbound-rtp" && report.kind === "audio" && report.packetsReceived > 0 && report.codecId) {
                     if (statistics.get(report.codecId)?.mimeType.toLowerCase() !== "audio/opus") {
                         throw new Error("The received audio codec differs from the selected format.");
@@ -324,12 +378,29 @@ class RealtimeAudio {
                         samples.set(id, decoded);
                     }
                 }
-                if (report.type === "outbound-rtp" && report.kind === "audio" &&
-                    this.captureEnabled && this.captureAttached && this.sender.track === this.capture &&
-                    report.packetsSent > (this.outboundBaseline?.get(id) ?? 0) && !this.sent) {
-                    this.sent = true;
-                    this.report("outgoing");
+                if (capturing && report.type === "outbound-rtp" && report.kind === "audio") {
+                    const packets = Number.isSafeInteger(report.packetsSent) && report.packetsSent >= 0 ? report.packetsSent : 0;
+                    const bytes = Number.isSafeInteger(report.bytesSent) && report.bytesSent >= 0 ? report.bytesSent : 0;
+                    const previous = this.outboundCounters.get(id);
+                    packetsDelta += Math.max(0, packets - (previous?.packets ?? this.outboundBaseline?.get(id) ?? 0));
+                    bytesDelta += Math.max(0, bytes - (previous?.bytes ?? this.outboundByteBaseline?.get(id) ?? 0));
+                    this.outboundCounters.set(id, { packets, bytes });
+                    const codec = statistics.get(report.codecId)?.mimeType.toLowerCase();
+                    if (codec === "audio/opus") {
+                        sendCodec = codec;
+                    }
+                    if (packets > (this.outboundBaseline?.get(id) ?? 0) && !this.sent) {
+                        this.sent = true;
+                        this.report("outgoing");
+                    }
                 }
+            }
+            if (capturing) {
+                if (inputNonSilent && !this.inputSignalObserved) {
+                    this.inputSignalObserved = true;
+                    this.report("input-signal-observed");
+                }
+                this.reportCaptureEvidence(energyDelta, packetsDelta, bytesDelta, signalAvailable, sendCodec);
             }
             this.decodedSamples = samples;
             if (decodedProgress) {

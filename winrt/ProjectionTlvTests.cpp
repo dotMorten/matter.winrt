@@ -303,17 +303,17 @@ Camera::Commands::AudioStreamAllocate::Type AudioRequest()
     return winrt::get_self<Implementation::MatterCameraAudioStreamOptions>(options)->Snapshot();
 }
 
-winrt::Matter::Windows::Controller::MatterCameraAudioFormatCapabilities AudioFormats()
+winrt::Matter::Windows::Controller::MatterCameraAudioFormatCapabilities AudioFormats(
+    std::initializer_list<uint8_t> depths = { 16, 24 })
 {
     Camera::Structs::AudioCapabilitiesStruct::Type capabilities;
     Camera::AudioCodecEnum codecs[]{ Camera::AudioCodecEnum::kOpus, Camera::AudioCodecEnum::kAacLc,
                                    static_cast<Camera::AudioCodecEnum>(255) };
     uint32_t rates[]{ 16000, 48000 };
-    uint8_t depths[]{ 16, 24 };
     capabilities.maxNumberOfChannels = 2;
     capabilities.supportedCodecs = chip::app::DataModel::List<const Camera::AudioCodecEnum>(codecs);
     capabilities.supportedSampleRates = chip::app::DataModel::List<const uint32_t>(rates);
-    capabilities.supportedBitDepths = chip::app::DataModel::List<const uint8_t>(depths);
+    capabilities.supportedBitDepths = chip::app::DataModel::List<const uint8_t>(depths.begin(), depths.size());
     return winrt::make<Implementation::MatterCameraAudioFormatCapabilities>(
         Implementation::CameraCommandArguments(capabilities));
 }
@@ -438,6 +438,31 @@ void TestAudioAdapterAndControls()
     capabilities->mCamera = AudioCamera();
     capabilities->mMicrophone = AudioFormats();
     Require(capabilities->SupportsListening(), "A compatible camera microphone was rejected");
+    for (auto depths : { std::initializer_list<uint8_t>{ 24, 0 }, std::initializer_list<uint8_t>{ 24 },
+                         std::initializer_list<uint8_t>{ 0 }, std::initializer_list<uint8_t>{} })
+    {
+        capabilities->mMicrophone = AudioFormats(depths);
+        capabilities->mSpeaker = AudioFormats({ 0 });
+        auto raw = capabilities->mMicrophone.BitDepths();
+        Require(raw.Size() == depths.size() && std::equal(raw.begin(), raw.end(), depths.begin()),
+                "Advertised invalid bit depths were discarded or replaced");
+        Require(capabilities->SupportsListening() == (depths.size() != 0 && *depths.begin() == 24),
+                "All-invalid microphone or independent invalid speaker eligibility changed");
+        auto request = AudioRequest();
+        request.bitDepth = 24;
+        auto format = winrt::get_self<Implementation::MatterCameraAudioFormatCapabilities>(capabilities->mMicrophone);
+        if (capabilities->SupportsListening())
+        {
+            format->Validate(request);
+        }
+        else
+        {
+            RequireHResult([&] { format->Validate(request); }, E_NOTIMPL, "All-invalid depths permitted allocation");
+        }
+        request.bitDepth = 0;
+        RequireHResult([&] { format->Validate(request); }, E_NOTIMPL, "Zero bit depth was selectable");
+    }
+    capabilities->mMicrophone = AudioFormats();
     for (auto camera : { AudioCamera(0x0143), AudioCamera(0x1234), AudioCamera(0x0142, 3),
                          AudioCamera(0x0142, 2, false), AudioCamera(0x0142, 2, true, false) })
     {

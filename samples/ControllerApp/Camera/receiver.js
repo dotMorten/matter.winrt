@@ -80,7 +80,7 @@ async function receive(message) {
         talkButton.hidden = message.talk !== true;
         talkButton.disabled = true;
         if (message.listen === true) {
-            audioEngine = new RealtimeAudio(document.getElementById("audio"), (audioStatus, error) => {
+            audioEngine = new RealtimeAudio(document.getElementById("audio"), (audioStatus, error, evidence) => {
                 if (peer !== ownedPeer) {
                     return;
                 }
@@ -89,14 +89,25 @@ async function receive(message) {
                     closeReceiver();
                     return;
                 }
-                audioState.textContent = `Audio: ${audioStatus}.`;
+                if (audioStatus === "diagnostics") {
+                    audioState.textContent = `Capture enabled; input signal ${evidence.inputSignalObserved ? "observed" : "not observed"}; ` +
+                        `RTP delta ${evidence.packetsDelta}; camera playback UNVERIFIED.`;
+                    publish("talk-diagnostics", { evidence });
+                    return;
+                }
+                audioState.textContent = `Audio: ${audioStatus}. Camera talkback playback unverified.`;
                 if (audioStatus === "capture-on") {
                     talkButton.textContent = "MICROPHONE ACTIVE - release to stop";
+                    const label = audioEngine.capture?.label;
+                    document.getElementById("capture-input").textContent = typeof label === "string" && label
+                        ? `Active local input: ${label.slice(0, 128)} (label not exported).`
+                        : "Active local input: device label unavailable.";
                 } else if (audioStatus === "outgoing") {
-                    talkButton.textContent = "TRANSMITTING - release to stop";
+                    talkButton.textContent = "OUTGOING RTP - camera playback unverified - release to stop";
                 } else if (["capture-off", "permission-denied", "permission-timeout", "capture-unavailable",
                     "talk-unsupported", "capture-timeout"].includes(audioStatus)) {
                     talkButton.textContent = "Hold to talk (microphone off)";
+                    document.getElementById("capture-input").textContent = "Local input inactive; device labels stay local.";
                 }
                 publish("audio", { state: audioStatus });
             });

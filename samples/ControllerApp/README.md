@@ -82,7 +82,7 @@ direct development outputs:
 ```powershell
 dotnet build .\samples\ControllerApp\MatterControllerApp.csproj `
     -p:Platform=x64 -p:Unpackaged=true `
-    -p:MatterControllerPackageVersion=0.2.0-camera.20 -p:MatterCameraDevelopment=true
+    -p:MatterControllerPackageVersion=0.2.0-camera.22 -p:MatterCameraDevelopment=true
 ```
 
 The package version property defaults to the existing published preview, and
@@ -141,13 +141,21 @@ Select the explicit media mode before **Start receiver**. Video-only omits
 AudioStreamID rather than requesting automatic selection with protocol null.
 Listening allocates an owned camera microphone stream after fresh capability,
 firmware, privacy and actual browser-codec checks. The adapter currently accepts
-Opus mono/16-bit profiles at mutually supported sample rates, with an AV bandwidth
+Opus mono profiles at mutually supported sample rates and advertised source bit
+depths (8/16/24/32), with an AV bandwidth
 budget. It tries at most three advertised candidates, and only advances after
 correlated DynamicConstraintError/ConstraintError refusals. Unknown outcomes,
 resource exhaustion and command/state refusals are not format fallback signals.
 No vendor quirks or global G350 profile are installed. A five-minute successful
 profile hint never replaces fresh capability/privacy reads; firmware, capability,
 mode/bandwidth changes and relevant failures invalidate it.
+Camera source bit depth is allocation metadata, not browser PCM precision; the
+browser handles capture/resampling internally. Raw malformed entries such as
+`[24,0]` remain visible with direction/attribute/field warnings, but zero is never
+selected. Invalid speaker formats cannot disable valid receive-only listening.
+When fewer than three sample-rate candidates exist, lower 32000/20000-bit/s mono
+voice budgets fill the bounded fallback set only when below the initial budget.
+These are client budgets, not assumed hardware acceptance.
 
 Talkback additionally requires compatible speaker formats and reported full-duplex
 support; unsupported/unknown revisions and half-duplex fail explicitly before
@@ -170,6 +178,17 @@ autoplay denial are local playback conditions, not camera disconnections.
 **Resume local playback** retries blocked playback explicitly. Capture and
 outgoing-packet indicators are independent; packet counts are not proof that
 the camera speaker is audible.
+During an authorized hold, redacted diagnostics distinguish capture enabled,
+input energy available/non-silence observed, current RTP packet/byte deltas,
+negotiated direction/Opus codec, and sender encoding/track activity. Input
+selection is reported as default or explicitly selected; the local input
+selector shows available device labels, and the active track's device label is
+shown locally during capture but never crosses the diagnostic bridge. No input samples, device identifiers,
+raw SDP, ICE candidates or credentials are retained or exported. Missing energy
+statistics remain unavailable rather than a silence verdict; energy is not proof
+of speech. Camera speaker mute/volume/bounds and selected endpoint/stream metadata
+are shown without changing remote controls. Camera playback always remains
+**unverified** until receiver-side evidence or an explicit user audibility report.
 
 Stop closes browser media and the Matter session before attempting owned audio
 and video release once. Partially completed audio preparation recovers the
@@ -220,7 +239,7 @@ run the isolated synthetic loopback:
 ```powershell
 .\tools\test-camera-receiver-media.ps1 `
     -OutputDirectory C:\temp\matter-camera-media-test-1 `
-    -PackageVersion 0.2.0-camera.20
+    -PackageVersion 0.2.0-camera.22
 ```
 
 Use a fresh output directory for each run. The special test build starts neither
@@ -235,6 +254,10 @@ untrusted DOM presses, capture revocation and repeated Stop. Stale fixture
 callbacks are scoped to their own peer/token. Results exclude SDP/ICE and
 explicitly report `physicalAudibilityValidated: false`. The fixture is excluded
 from ordinary sample builds and packages.
+Offers/answers/ICE, capture authorization/revocation and media states cross the
+actual native host/WebView message boundary. The host uses the same production
+media-message router as the receiver; capture authorization is synthetic only in
+this isolated test. Results require all audio/capture/media/diagnostic routes.
 
 The Node tests simulate peer connections, permissions and media statistics, and
 the NativeAOT tests exercise the production profile/ownership policies. They do
@@ -245,6 +268,15 @@ no capture after release/backgrounding/reconnect/privacy, and empty owned
 allocations after Stop on representative hardware. At least microphone-only and
 full-duplex devices are needed; half-duplex remains explicitly unsupported.
 Do not reset/re-pair devices or use externally owned allocations as cleanup targets.
+
+User-provided G350 evidence on 2026-10-13 establishes camera-to-PC listening and
+matched 24-bit Opus allocation/release in an isolated experiment. It does not
+establish successful PC-to-camera speaker playback: capture-on/outgoing indicators
+were observed but no camera sound was heard. Reproduce that case with the above
+diagnostics before attributing the failure to capture, negotiation, SDK/port
+signaling or camera playback. Complete AV-session cleanup, installed-package
+execution, ARM execution and a representative hardware matrix remain separate
+acceptance checks; package builds and synthetic loopback do not replace them.
 
 The component is a development preview. It uses file-backed operational keys
 and permits test device attestation by default.

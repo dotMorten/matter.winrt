@@ -22,8 +22,45 @@ internal static class Program
     [DllImport("CameraNativeAotFixture.dll", ExactSpelling = true)]
     private static extern int GetCameraAudioFixture(int variant, out IntPtr value);
 
+    private static async Task TestMediaBridgeAsync()
+    {
+        var routes = new List<string>();
+        async Task<bool> Route(string json)
+        {
+            using var message = System.Text.Json.JsonDocument.Parse(json);
+            return await MatterControllerApp.Camera.CameraReceiverMediaBridge.RouteAsync(message.RootElement,
+                state => { routes.Add($"media:{state}"); return Task.CompletedTask; },
+                press => { routes.Add($"capture:{press}"); return Task.CompletedTask; },
+                () => routes.Add("release"), state => routes.Add($"audio:{state}"),
+                _ => routes.Add("diagnostics"));
+        }
+        foreach (string message in new[] {
+            """{"type":"media","state":"playing"}""",
+            """{"type":"audio","state":"decoded"}""",
+            """{"type":"capture-request","press":1}""",
+            """{"type":"capture-release"}""",
+            """{"type":"audio","state":"input-signal-observed"}""" })
+        {
+            Require(await Route(message), "Production host media/capture routes are independently reachable");
+        }
+        Require(routes.SequenceEqual(new[] { "media:playing", "audio:decoded", "capture:1", "release", "audio:input-signal-observed" }),
+            "Audio and capture must not be nested under video media routing");
+        Require(!await Route("""{"type":"offer"}"""), "Signaling remains separate from media routing");
+        foreach (string message in new[] {
+            """{"type":"audio","state":"camera-audible"}""",
+            """{"type":"media","state":"unknown"}""",
+            """{"type":"capture-request","press":0}""" })
+        {
+            bool rejected = false;
+            try { await Route(message); }
+            catch (InvalidOperationException) { rejected = true; }
+            Require(rejected, "Unknown states and invalid capture intent fail explicitly");
+        }
+    }
+
     private static async Task Main()
     {
+        await TestMediaBridgeAsync();
         var absent = new MatterCameraStreamSelection(MatterCameraStreamSelectionKind.Absent, null);
         var automatic = new MatterCameraStreamSelection(MatterCameraStreamSelectionKind.AutoSelect, null);
         var explicitZero = new MatterCameraStreamSelection(MatterCameraStreamSelectionKind.ExplicitId, 0);
@@ -118,6 +155,52 @@ internal static class Program
             }
             catch (NotSupportedException) { rejected = true; }
             Require(rejected, "Unknown engine codecs fail rather than being coerced");
+        }
+        using (var engine = System.Text.Json.JsonDocument.Parse(
+            """{"codecs":["audio/opus"],"sampleRates":[48000,24000,16000],"sourceBitDepths":[8,16,24,32],"pcmPrecision":"browser-managed","maximumChannels":2}"""))
+        {
+            for (int variant = 9; variant <= 13; ++variant)
+            {
+                Marshal.ThrowExceptionForHR(GetCameraAudioFixture(variant, out audioPointer));
+                MatterCameraAudioCapabilities fixture;
+                try { fixture = WinRT.MarshalInspectable<MatterCameraAudioCapabilities>.FromAbi(audioPointer); }
+                finally { Marshal.Release(audioPointer); }
+                var profiles = new MatterControllerApp.Camera.CameraAudioProfiles();
+                if (variant == 12)
+                {
+                    Require(!fixture.SupportsListening, "All-invalid microphone must not enable listening");
+                    bool rejected = false;
+                    try { profiles.Prepare(2, 1, fixture, engine.RootElement, false, 2000000, DateTimeOffset.UtcNow); }
+                    catch (NotSupportedException) { rejected = true; }
+                    Require(rejected, "All-invalid microphone must not produce allocation candidates");
+                    continue;
+                }
+                var candidates = profiles.Prepare(2, 1, fixture, engine.RootElement, false, 2000000, DateTimeOffset.UtcNow);
+                Require(candidates.All(profile => profile.BitDepth == 24 && profile.Options().BitDepth == 24),
+                    "Advertised 24-bit allocation metadata must not be replaced with browser PCM assumptions");
+                Require(fixture.Microphone.BitDepths.SequenceEqual(variant == 9 ? new byte[] { 24, 0 } : new byte[] { 24 }),
+                    "Raw invalid/valid advertised depths preserved under NativeAOT");
+                if (variant <= 10)
+                {
+                    Require(candidates.Count == 3 && candidates.All(profile => profile.SampleRate == 48000) &&
+                        candidates.Select(profile => profile.BitRate).SequenceEqual(new uint[] { 64000, 32000, 20000 }),
+                        "Single-compatible-rate cameras receive a bounded, justified lower-bitrate candidate set");
+                }
+                if (variant is 11 or 13)
+                {
+                    bool rejected = false;
+                    try { profiles.Prepare(2, 1, fixture, engine.RootElement, true, 2000000, DateTimeOffset.UtcNow); }
+                    catch (NotSupportedException) { rejected = true; }
+                    Require(rejected, "Invalid/unavailable speaker gates talkback, never listening");
+                }
+                else
+                {
+                    Require(profiles.Prepare(2, 1, fixture, engine.RootElement, true, 2000000, DateTimeOffset.UtcNow)[0].BitDepth == 24,
+                        "Full-duplex source-depth intersection");
+                }
+                Require(variant != 9 || MatterControllerApp.Camera.CameraAudioProfiles.DescribeFormats(fixture).Contains("BitDepths=[24,0]"),
+                    "Malformed-capability warning names raw offending field/values");
+            }
         }
         Require(streamOptions.MinimumWidth == 640 && streamOptions.MaximumWidth == 640 &&
             streamOptions.MinimumHeight == 480 && streamOptions.MaximumHeight == 480 &&

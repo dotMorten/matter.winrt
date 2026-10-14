@@ -15,6 +15,7 @@
   <ItemGroup>
     <Compile Include="..\..\samples\ControllerApp\Camera\CameraAllocationOwnership.cs" Link="CameraAllocationOwnership.cs" />
     <Compile Include="..\..\samples\ControllerApp\Camera\CameraAudioProfiles.cs" Link="CameraAudioProfiles.cs" />
+    <Compile Include="..\..\samples\ControllerApp\Camera\CameraReceiverMediaBridge.cs" Link="CameraReceiverMediaBridge.cs" />
     <PackageReference Include="Microsoft.Windows.CsWinRT" Version="2.3.1" />
     <CsWinRTInputs Include="$(MatterWinrtOutput)\Matter.Windows.Controller.winmd" Condition="'$(MatterControllerPackageVersion)' == ''" />
     <PackageReference Include="Matter.Windows.Controller" Version="$(MatterControllerPackageVersion)" Condition="'$(MatterControllerPackageVersion)' != ''" />

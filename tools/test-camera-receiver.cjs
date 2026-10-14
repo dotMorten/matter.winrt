@@ -36,7 +36,7 @@ function receiver(earlyIce = false) {
     const captureRequests = [];
     const captureTracks = [];
     let acquire = async () => {
-        const track = { kind: "audio", readyState: "live", enabled: true,
+        const track = { kind: "audio", label: "Synthetic local input", readyState: "live", enabled: true,
             stop() { this.readyState = "ended"; this.stopped = true; } };
         captureTracks.push(track);
         return { getTracks: () => [track] };
@@ -190,7 +190,7 @@ test("autoplay denial is playback-blocked, not camera disconnection", async () =
 
 test("unknown codecs and incompatible formats fail before offering", async () => {
     for (const profile of [{ ...audioProfile, codec: "unknown" }, { ...audioProfile, sampleRate: 44100 },
-        { ...audioProfile, bitDepth: 24 }]) {
+        { ...audioProfile, bitDepth: 0 }, { ...audioProfile, bitDepth: 20 }]) {
         const host = receiver();
         await assert.rejects(host.start({ ...listening, audio: profile }));
         assert.equal(host.messages.some(message => message.type === "offer"), false);
@@ -209,6 +209,8 @@ test("full-duplex startup does not capture until authorized hold", async () => {
     assert.equal(host.captureRequests[0].video, false);
     assert.equal(host.audio().captureEnabled, true);
     assert.equal(host.element("talk").textContent, "MICROPHONE ACTIVE - release to stop");
+    assert.equal(host.element("capture-input").textContent, "Active local input: Synthetic local input (label not exported).");
+    assert.equal(JSON.stringify(host.messages).includes("Synthetic local input"), false);
     host.element("talk").handlers.get("pointerup")();
     await settle();
     assert.equal(host.captureTracks[0].stopped, true);
@@ -301,7 +303,72 @@ test("old outgoing packet counters do not prove a new transmission", async () =>
     assert.equal(host.messages.some(message => message.state === "outgoing"), false);
     host.peers[0].getStats = async () => audioStats(96000, 101);
     await host.audio().inspect();
-    assert.equal(host.messages.at(-1).state, "outgoing");
+    assert.equal(host.messages.some(message => message.state === "outgoing"), true);
+    assert.equal(host.messages.at(-1).evidence.cameraPlayback, "unverified");
+    await host.stop();
+});
+
+test("24-bit source metadata does not claim browser capture PCM precision", async () => {
+    const host = receiver();
+    await host.start({ ...talking, audio: { ...audioProfile, bitDepth: 24 } });
+    assert.equal(host.captureRequests.length, 0);
+    await hold(host);
+    assert.equal("sampleSize" in host.captureRequests[0].audio, false);
+    assert.equal(host.audio().profile.bitDepth, 24);
+    await host.stop();
+});
+
+test("input energy and current RTP deltas are independent redacted evidence, never camera playback", async () => {
+    const host = receiver();
+    await host.start(talking);
+    await hold(host);
+    host.captureTracks[0].id = "owned-input";
+    function statistics(energy, packets, bytes) {
+        const stats = audioStats(48000, packets);
+        Object.assign(stats.get("outgoing"), { codecId: "opus", bytesSent: bytes });
+        stats.set("source", { type: "media-source", kind: "audio", trackIdentifier: "owned-input", totalAudioEnergy: energy });
+        return stats;
+    }
+    host.peers[0].getStats = async () => statistics(100, 10, 100);
+    await host.audio().inspect();
+    let evidence = host.messages.filter(message => message.type === "talk-diagnostics").at(-1).evidence;
+    assert.equal(evidence.inputSignalObserved, false, "Old cumulative energy is not new input");
+    assert.equal(evidence.inputEnergyDelta, 0);
+    host.peers[0].getStats = async () => statistics(100.2, 12, 140);
+    await host.audio().inspect();
+    evidence = host.messages.filter(message => message.type === "talk-diagnostics").at(-1).evidence;
+    assert.equal(evidence.inputSignalObserved, true);
+    assert.equal(evidence.packetsDelta, 2);
+    assert.equal(evidence.bytesDelta, 40);
+    assert.equal(evidence.codec, "audio/opus");
+    assert.equal(evidence.cameraPlayback, "unverified");
+    assert.equal(evidence.inputSelection, "default");
+    assert.equal(host.messages.some(message => message.state === "input-signal-observed"), true);
+    const diagnosticKeys = Object.keys(evidence);
+    assert.equal(diagnosticKeys.some(key => /sdp|candidate|deviceId|samples|trackIdentifier/i.test(key)), false);
+    host.peers[0].getStats = async () => statistics(100.2, 12, 140);
+    await host.audio().inspect();
+    assert.equal(host.messages.at(-1).evidence.packetsDelta, 0);
+    const beforeStop = host.messages.filter(message => message.type === "talk-diagnostics").length;
+    await host.stop();
+    await host.audio()?.inspect();
+    assert.equal(host.messages.filter(message => message.type === "talk-diagnostics").length, beforeStop);
+});
+
+test("missing or unrelated input energy never becomes a non-silence claim", async () => {
+    const host = receiver();
+    await host.start(talking);
+    await hold(host);
+    host.captureTracks[0].id = "owned-input";
+    host.peers[0].getStats = async () => {
+        const stats = audioStats(48000, 42);
+        stats.set("other", { type: "media-source", kind: "audio", trackIdentifier: "other-input", audioLevel: 1 });
+        return stats;
+    };
+    await host.audio().inspect();
+    const evidence = host.messages.filter(message => message.type === "talk-diagnostics").at(-1).evidence;
+    assert.equal(evidence.inputSignalAvailable, false);
+    assert.equal(evidence.inputSignalObserved, false);
     await host.stop();
 });
 
