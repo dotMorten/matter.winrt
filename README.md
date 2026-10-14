@@ -93,7 +93,9 @@ version used at build time.
 
 The `windows-camera-commissioning-compatible` branch combines the camera topic
 through `455b62d` with structured commissioning and per-operation interface
-selection. Its development package is `0.2.0-camera-commissioning.2`. See
+selection. The next development preview is `0.2.0-preview.1`. CI produces the
+dual-architecture package and its SHA256 as downloadable GitHub Actions
+artifacts; it does not publish to nuget.org. See
 [combined SDK acceptance and migration](docs/combined-sdk-acceptance.md) for the
 declared native dependency, package-consumer fixtures, and outstanding release
 gates. The actual published `0.1.0-preview.14` WinMD is required for acceptance;
@@ -401,9 +403,9 @@ pin or overwriting the published preview version:
 
 ```powershell
 .\tools\build.ps1 -Architecture all -MatterSdkRoot C:\src\matterforwindows `
-    -BuildCameraSignaling -Version 0.2.0-camera.19
+    -BuildCameraSignaling -Version 0.2.0-preview.1
 .\tools\test-camera-nativeaot.ps1 -MatterSdkRoot C:\src\matterforwindows `
-    -PackageVersion 0.2.0-camera.19
+    -PackageVersion 0.2.0-preview.1
 ```
 
 Explicit development build options cannot be combined with `-SkipBuild`, which

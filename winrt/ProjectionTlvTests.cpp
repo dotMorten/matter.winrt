@@ -2,6 +2,7 @@
 #include "Projection.cpp"
 
 #include <iostream>
+#include <future>
 #include <stdexcept>
 
 namespace {
@@ -632,6 +633,61 @@ void TestCommissioningEvidence()
     }
     std::cout << "PASS commissioning progress is not success, last completed stage and native failure evidence\n";
 }
+
+void TestReadOperationAdmission()
+{
+    std::timed_mutex mutex;
+    auto cancellation = std::make_shared<std::atomic_bool>(false);
+    RequireHResult([&] {
+        Implementation::AcquireOperationLock(mutex, cancellation, std::chrono::steady_clock::now());
+    }, HRESULT_FROM_WIN32(ERROR_TIMEOUT), "An expired read was admitted");
+    {
+        auto admitted = Implementation::AcquireOperationLock(
+            mutex, cancellation, std::chrono::steady_clock::now() + std::chrono::seconds(1));
+        Require(admitted.owns_lock(), "A valid read was not serialized");
+    }
+    std::unique_lock owner(mutex);
+    auto timeout = std::async(std::launch::async, [&] {
+        RequireHResult([&] {
+            Implementation::AcquireOperationLock(
+                mutex, cancellation, std::chrono::steady_clock::now() + std::chrono::milliseconds(30));
+        }, HRESULT_FROM_WIN32(ERROR_TIMEOUT), "A queued read ignored its deadline");
+    });
+    const bool timedOutWhileBlocked = timeout.wait_for(std::chrono::seconds(2)) == std::future_status::ready;
+    owner.unlock();
+    timeout.get();
+    Require(timedOutWhileBlocked, "The read deadline excluded the operation queue");
+    owner.lock();
+    auto canceled = std::async(std::launch::async, [&] {
+        RequireHResult([&] {
+            Implementation::AcquireOperationLock(
+                mutex, cancellation, std::chrono::steady_clock::now() + std::chrono::seconds(5));
+        }, winrt::hresult_canceled().code(), "A queued read ignored cancellation");
+    });
+    Require(canceled.wait_for(std::chrono::milliseconds(50)) == std::future_status::timeout,
+            "A read bypassed the operation owner");
+    cancellation->store(true, std::memory_order_release);
+    const bool canceledWhileBlocked = canceled.wait_for(std::chrono::seconds(2)) == std::future_status::ready;
+    owner.unlock();
+    canceled.get();
+    Require(canceledWhileBlocked, "Read cancellation waited for another operation");
+    std::cout << "PASS read admission preserves serialization and includes queue waits in cancellation/deadlines\n";
+}
+
+void TestLateSessionCancellation()
+{
+    unsigned releases = 0;
+    auto pending = std::make_shared<Implementation::PendingCameraSession>([&](uint64_t handle) {
+        Require(handle == UINT64_MAX, "Late cancellation changed the session handle");
+        ++releases;
+    });
+    pending->Record(UINT64_MAX);
+    pending->Cancel();
+    pending->Release();
+    pending->Release();
+    Require(releases == 1, "Late cancellation did not release the session exactly once");
+    std::cout << "PASS cancellation after session creation retains once-only cleanup ownership\n";
+}
 } // namespace
 
 int main()
@@ -651,6 +707,8 @@ int main()
         TestAudioOwnership();
         TestTypedMediaSelections();
         TestCommissioningEvidence();
+        TestReadOperationAdmission();
+        TestLateSessionCancellation();
     }
     catch (winrt::hresult_error const & error)
     {

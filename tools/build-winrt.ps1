@@ -185,15 +185,19 @@ $componentCommit = (& git -C $matterWinRtRoot rev-parse HEAD).Trim()
 if ($LASTEXITCODE -ne 0) { throw "Unable to resolve the WinRT SDK commit." }
 $nativePin = ((& git -C $matterWinRtRoot ls-files --stage matterforwindows) -split '\s+')[1]
 if ($LASTEXITCODE -ne 0) { throw "Unable to resolve the declared native dependency." }
-$sourceChanges = @(& git -C $matterWinRtRoot status --porcelain --untracked-files=no)
+$sourceChanges = @(& git -C $matterWinRtRoot status --porcelain --untracked-files=no --ignore-submodules=none)
 if ($LASTEXITCODE -ne 0) { throw "Unable to inspect SDK source state." }
+$nativeChanges = @(& git -C $matterSdkRoot status --porcelain --untracked-files=no --ignore-submodules=none)
+if ($LASTEXITCODE -ne 0) { throw "Unable to inspect native SDK source state." }
+$nativeSourceDirty = $nativeChanges.Count -ne 0
 [ordered]@{
     architecture = $Architecture
     sdkCommit = $componentCommit
-    sourceDirty = $sourceChanges.Count -ne 0
+    sourceDirty = ($sourceChanges.Count -ne 0) -or $nativeSourceDirty
     nativeCommit = $sdkCommit
     nativePin = $nativePin
-    developmentOverride = $sdkCommit -ne $nativePin
+    nativeSourceDirty = $nativeSourceDirty
+    developmentOverride = ($sdkCommit -ne $nativePin) -or $nativeSourceDirty
     msvc = (Get-Item (Get-Command cl.exe).Source).VersionInfo.FileVersion
     windowsSdk = $windowsSdkVersion
     nativeLibrarySha256 = (Get-FileHash $matterLibrary -Algorithm SHA256).Hash

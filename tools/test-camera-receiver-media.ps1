@@ -2,7 +2,7 @@
 param(
     [Parameter(Mandatory)]
     [string] $OutputDirectory,
-    [string] $PackageVersion = "0.2.0-camera.22"
+    [string] $PackageVersion = "0.2.0-preview.1"
 )
 
 $ErrorActionPreference = "Stop"

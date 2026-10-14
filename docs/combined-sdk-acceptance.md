@@ -25,6 +25,9 @@ Package `0.2.0-camera-commissioning.2` includes matched x64/ARM64 DLLs, WinMD,
 projection/build assets, activation metadata, and build provenance. Versions
 cannot be overwritten. `build-info.json` records SDK/native commits, native pin,
 dirty-source and override indicators, toolchain and DLL/WinMD/library hashes.
+New builds also record `nativeSourceDirty`, including native submodule changes;
+`sourceDirty` includes either checkout, and dirty native sources count as a
+development override even if their HEAD matches the declared pin.
 The adjacent `.nupkg.sha256` records the package hash. Any dirty-source or
 different-revision build is development evidence, not a release build.
 Version `.1` is superseded: its provenance repeated architecture entries.
@@ -48,16 +51,36 @@ Architecture WinMD bytes can differ; their ordered interface/activation
 contracts were compared in both directions before packaging. Each architecture's
 exact WinMD is also included beside its DLL under `runtimes`.
 
+## Standard development preview
+
+The next package is `Matter.Windows.Controller/0.2.0-preview.1`. The Windows
+workflow builds its matched x64/ARM64 assets, runs package-consumer and adopted
+baseline checks, and uploads the `.nupkg` and `.nupkg.sha256` together as the
+`Matter.Windows.Controller.0.2.0-preview.1` artifact. Download and extract
+these files into the repository's `artifacts` directory to use the local
+NuGet source. There is no automatic publication to nuget.org.
+
+The hashes and validation matrix above describe the historical
+`0.2.0-camera-commissioning.2` artifact, not the new preview. Read the new
+package's checksum and `build-info.json` for its actual hashes and revisions.
+A green ordinary CI run is not preview.14 or physical-device acceptance;
+those outstanding gates remain explicit below.
+
+The preview also retains pending-session cleanup ownership for video-only
+startup cancellation and counts serialized operation-queue waits toward read
+deadlines and cancellation. Native regressions cover late once-only session
+cleanup and blocked read admission, without claiming real-device cleanup.
+
 ## Acceptance commands
 
 ```powershell
-.\tools\test-package-consumers.ps1 -PackageVersion 0.2.0-camera-commissioning.2 `
+.\tools\test-package-consumers.ps1 -PackageVersion 0.2.0-preview.1 `
     -OutputDirectory .\out\combined-consumer-x64 -MatterSdkRoot .\matterforwindows -NativeAot -Run
-.\tools\test-package-consumers.ps1 -PackageVersion 0.2.0-camera-commissioning.2 `
+.\tools\test-package-consumers.ps1 -PackageVersion 0.2.0-preview.1 `
     -OutputDirectory .\out\combined-consumer-arm64 -MatterSdkRoot .\matterforwindows -Architecture arm64 -NativeAot
 .\tools\test-combined-compatibility.ps1 `
     -BaselinePackage <actual-published-preview.14.nupkg> `
-    -CombinedPackage .\artifacts\Matter.Windows.Controller.0.2.0-camera-commissioning.2.nupkg `
+    -CombinedPackage .\artifacts\Matter.Windows.Controller.0.2.0-preview.1.nupkg `
     -OutputDirectory .\out\preview14-acceptance -MatterSdkRoot .\matterforwindows -Run
 .\tools\test-installed-consumer.ps1 `
     -PublishedConsumer .\out\combined-consumer-x64\CombinedConsumer\publish `
@@ -117,7 +140,7 @@ Machine-readable summary and copied loopback/installed results are in
 ## Migration
 
 Replace the application's single `Matter.Windows.Controller` package reference
-with the combined development version; remove direct metadata/DLL overrides.
+with `0.2.0-preview.1` from the local feed; remove direct metadata/DLL overrides.
 Rebuild in fresh x64/ARM64 intermediate directories, ensuring the deployed
 native DLL comes from the same package as the projection. For unpackaged apps,
 merge the package's `winmd\Matter.Windows.Controller.manifest` activation

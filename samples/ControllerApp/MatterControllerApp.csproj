@@ -21,7 +21,7 @@
     <DefineConstants>$(DefineConstants);DISABLE_XAML_GENERATED_MAIN</DefineConstants>
     <WindowsPackageType Condition="'$(Unpackaged)' == 'true'">None</WindowsPackageType>
     <WindowsAppSDKSelfContained Condition="'$(Unpackaged)' == 'true'">true</WindowsAppSDKSelfContained>
-    <MatterControllerPackageVersion Condition="'$(MatterControllerPackageVersion)' == ''">0.2.0-camera-commissioning.2</MatterControllerPackageVersion>
+    <MatterControllerPackageVersion Condition="'$(MatterControllerPackageVersion)' == ''">0.2.0-preview.1</MatterControllerPackageVersion>
     <MatterCameraDevelopment Condition="'$(MatterCameraDevelopmentRoot)' != ''">true</MatterCameraDevelopment>
     <MatterCameraDevelopment Condition="'$(MatterCameraMediaTest)' == 'true'">true</MatterCameraDevelopment>
     <DefineConstants Condition="'$(MatterCameraDevelopment)' == 'true'">$(DefineConstants);MATTER_CAMERA_DEVELOPMENT</DefineConstants>

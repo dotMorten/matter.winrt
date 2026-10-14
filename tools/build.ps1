@@ -2,7 +2,7 @@
 param(
     [ValidateSet("x64", "arm64", "all")]
     [string] $Architecture = "all",
-    [string] $Version = "0.2.0-camera-commissioning.2",
+    [string] $Version = "0.2.0-preview.1",
     [string] $OutputDirectory = "artifacts",
     [switch] $SkipBuild,
     [string] $MatterSdkRoot,

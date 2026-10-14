@@ -69,6 +69,30 @@ constexpr char kCommissionedNodesKey[] = "winrt/nodes";
 constexpr size_t kGenericTlvBufferSize = 64 * 1024;
 constexpr size_t kMaximumPendingReports = 256;
 
+std::unique_lock<std::timed_mutex> AcquireOperationLock(
+    std::timed_mutex & mutex, std::shared_ptr<std::atomic_bool> const & cancellation,
+    std::chrono::steady_clock::time_point deadline)
+{
+    std::unique_lock lock(mutex, std::defer_lock);
+    for (;;)
+    {
+        if (cancellation && cancellation->load(std::memory_order_acquire))
+        {
+            throw hresult_canceled();
+        }
+        const auto now = std::chrono::steady_clock::now();
+        if (now >= deadline)
+        {
+            throw hresult_error(HRESULT_FROM_WIN32(ERROR_TIMEOUT), L"Matter attribute read timed out.");
+        }
+        if (lock.owns_lock())
+        {
+            return lock;
+        }
+        (void) lock.try_lock_until(std::min(deadline, now + std::chrono::milliseconds(100)));
+    }
+}
+
 struct NativeCommissioningProgress
 {
     chip::Controller::CommissioningStage stage;
@@ -1717,16 +1741,20 @@ public:
                                                                   std::chrono::steady_clock::time_point deadline =
                                                                       std::chrono::steady_clock::time_point::max())
     {
-        std::scoped_lock operationLock(mOperationMutex);
+        deadline = std::min(deadline, std::chrono::steady_clock::now() + kInteractionTimeout);
+        auto operationLock = AcquireOperationLock(mOperationMutex, cancellation, deadline);
         EnsureOpen();
         auto state = std::make_shared<GenericReadState>(endpointId, clusterId, attributeId, false, 0, 0);
         if (cancellation && cancellation->load(std::memory_order_acquire))
         {
             throw hresult_canceled();
         }
+        if (std::chrono::steady_clock::now() >= deadline)
+        {
+            throw hresult_error(HRESULT_FROM_WIN32(ERROR_TIMEOUT), L"Matter attribute read timed out.");
+        }
         StartConnectedOperation(nodeId, state->onConnected, state->onConnectionFailure);
         std::unique_lock lock(state->mutex);
-        deadline = std::min(deadline, std::chrono::steady_clock::now() + kInteractionTimeout);
         while (!state->complete)
         {
             if (cancellation && cancellation->load(std::memory_order_acquire))
@@ -2457,7 +2485,7 @@ private:
     static std::weak_ptr<ControllerRuntime> sInstance;
 
     std::mutex mMutex;
-    std::mutex mOperationMutex;
+    std::timed_mutex mOperationMutex;
     CameraAudioAllocationOwnership mAudioOwnership;
     hstring mStoragePath;
     uint64_t mControllerNodeId;
@@ -4778,6 +4806,7 @@ Controller::MatterCameraVideoStream AllocateCameraVideoStream(
 Controller::MatterCameraSession StartPreparedCamera(
     std::shared_ptr<ControllerRuntime> const & runtime, uint64_t nodeId, uint16_t endpointId, uint16_t videoStreamId,
     std::string const & sdp, std::shared_ptr<std::atomic_bool> const & canceled, Controller::MatterCameraStage & stage,
+    std::shared_ptr<PendingCameraSession> const & ownership,
     std::vector<Controller::MatterCameraIceServer> const & iceServers = {})
 {
     stage = Controller::MatterCameraStage::Validation;
@@ -4813,7 +4842,25 @@ Controller::MatterCameraSession StartPreparedCamera(
         throw hresult_error(E_INVALIDARG, L"The selected video stream is not an allocated LiveView stream.");
     }
     stage = Controller::MatterCameraStage::Signaling;
-    return runtime->StartCamera(nodeId, endpointId, videoStreamId, sdp, canceled, iceServers);
+    auto session = runtime->StartCamera(nodeId, endpointId, videoStreamId, sdp, canceled, iceServers);
+    ownership->Record(session.Handle());
+    try
+    {
+        if (canceled->load(std::memory_order_acquire))
+        {
+            throw hresult_canceled();
+        }
+        return session;
+    }
+    catch (...)
+    {
+        const auto failure = std::current_exception();
+        const auto failedStage = stage;
+        stage = Controller::MatterCameraStage::SessionEnd;
+        ownership->Release();
+        stage = failedStage;
+        std::rethrow_exception(failure);
+    }
 }
 
 Controller::MatterCameraFailureCategory CameraFailureCategory(
@@ -5033,11 +5080,15 @@ MatterControllerCamera::StartWithAllocatedVideoStreamAsync(uint64_t nodeId, uint
     auto lifetime = get_strong();
     const auto sdp = to_string(offerSdp);
     auto canceled = std::make_shared<std::atomic_bool>(false);
+    auto ownership = std::make_shared<PendingCameraSession>([runtime = mRuntime](uint64_t handle) { runtime->CloseCamera(handle); });
     auto cancellation = co_await get_cancellation_token();
-    cancellation.callback([canceled]() { canceled->store(true, std::memory_order_release); });
+    cancellation.callback([canceled, ownership] {
+        canceled->store(true, std::memory_order_release);
+        ownership->Cancel();
+    });
     co_await resume_background();
     auto stage = Controller::MatterCameraStage::Validation;
-    co_return StartPreparedCamera(mRuntime, nodeId, endpointId, videoStreamId, sdp, canceled, stage);
+    co_return StartPreparedCamera(mRuntime, nodeId, endpointId, videoStreamId, sdp, canceled, stage, ownership);
 }
 
 Windows::Foundation::IAsyncOperation<Controller::MatterCameraStartResult>
@@ -5047,15 +5098,28 @@ MatterControllerCamera::TryStartWithAllocatedVideoStreamAsync(uint64_t nodeId, u
     auto lifetime = get_strong();
     const auto sdp = to_string(offerSdp);
     auto canceled = std::make_shared<std::atomic_bool>(false);
+    auto ownership = std::make_shared<PendingCameraSession>([runtime = mRuntime](uint64_t handle) { runtime->CloseCamera(handle); });
     auto cancellation = co_await get_cancellation_token();
-    cancellation.callback([canceled]() { canceled->store(true, std::memory_order_release); });
+    cancellation.callback([canceled, ownership] {
+        canceled->store(true, std::memory_order_release);
+        ownership->Cancel();
+    });
     co_await resume_background();
     auto stage = Controller::MatterCameraStage::Validation;
     Controller::MatterCameraStartResult result{ nullptr };
     try
     {
-        result = winrt::make<implementation::MatterCameraStartResult>(
-            StartPreparedCamera(mRuntime, nodeId, endpointId, videoStreamId, sdp, canceled, stage));
+        auto session = StartPreparedCamera(mRuntime, nodeId, endpointId, videoStreamId, sdp, canceled, stage, ownership);
+        try
+        {
+            result = winrt::make<implementation::MatterCameraStartResult>(session);
+        }
+        catch (...)
+        {
+            stage = Controller::MatterCameraStage::SessionEnd;
+            ownership->Release();
+            throw;
+        }
     }
     catch (hresult_canceled const &)
     {
@@ -5102,18 +5166,32 @@ MatterControllerCamera::TryStartWithIceServersAsync(uint64_t nodeId, uint16_t en
     }
     const auto sdp = to_string(offerSdp);
     auto canceled = std::make_shared<std::atomic_bool>(false);
+    auto ownership = std::make_shared<PendingCameraSession>([runtime = mRuntime](uint64_t handle) { runtime->CloseCamera(handle); });
     auto cancellation = co_await get_cancellation_token();
-    cancellation.callback([canceled]() { canceled->store(true, std::memory_order_release); });
+    cancellation.callback([canceled, ownership] {
+        canceled->store(true, std::memory_order_release);
+        ownership->Cancel();
+    });
     co_await resume_background();
-    Controller::MatterCameraSession session{ nullptr };
+    Controller::MatterCameraStartResult result{ nullptr };
     auto operation = RunCameraOperation(stage, [&]() {
-        session = StartPreparedCamera(mRuntime, nodeId, endpointId, videoStreamId, sdp, canceled, stage, servers);
+        auto session = StartPreparedCamera(mRuntime, nodeId, endpointId, videoStreamId, sdp, canceled, stage, ownership, servers);
+        try
+        {
+            result = winrt::make<implementation::MatterCameraStartResult>(std::move(session));
+        }
+        catch (...)
+        {
+            stage = Controller::MatterCameraStage::SessionEnd;
+            ownership->Release();
+            throw;
+        }
     });
     if (!operation.Succeeded())
     {
         co_return winrt::make<implementation::MatterCameraStartResult>(operation.Failure());
     }
-    co_return winrt::make<implementation::MatterCameraStartResult>(std::move(session));
+    co_return result;
 }
 
 namespace {
