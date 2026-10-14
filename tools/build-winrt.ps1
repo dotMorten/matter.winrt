@@ -179,4 +179,26 @@ if (-not (Test-Path $dll) -or -not (Test-Path $winmd)) {
     throw "The WinRT component outputs were not produced for $Architecture."
 }
 
+$sdkCommit = (& git -C $matterSdkRoot rev-parse HEAD).Trim()
+if ($LASTEXITCODE -ne 0) { throw "Unable to resolve the native SDK commit." }
+$componentCommit = (& git -C $matterWinRtRoot rev-parse HEAD).Trim()
+if ($LASTEXITCODE -ne 0) { throw "Unable to resolve the WinRT SDK commit." }
+$nativePin = ((& git -C $matterWinRtRoot ls-files --stage matterforwindows) -split '\s+')[1]
+if ($LASTEXITCODE -ne 0) { throw "Unable to resolve the declared native dependency." }
+$sourceChanges = @(& git -C $matterWinRtRoot status --porcelain --untracked-files=no)
+if ($LASTEXITCODE -ne 0) { throw "Unable to inspect SDK source state." }
+[ordered]@{
+    architecture = $Architecture
+    sdkCommit = $componentCommit
+    sourceDirty = $sourceChanges.Count -ne 0
+    nativeCommit = $sdkCommit
+    nativePin = $nativePin
+    developmentOverride = $sdkCommit -ne $nativePin
+    msvc = (Get-Item (Get-Command cl.exe).Source).VersionInfo.FileVersion
+    windowsSdk = $windowsSdkVersion
+    nativeLibrarySha256 = (Get-FileHash $matterLibrary -Algorithm SHA256).Hash
+    winmdSha256 = (Get-FileHash $winmd -Algorithm SHA256).Hash
+    dllSha256 = (Get-FileHash $dll -Algorithm SHA256).Hash
+} | ConvertTo-Json | Set-Content (Join-Path $outputDirectory "build-info.json") -Encoding utf8
+
 Write-Host "Built WinRT component: $dll"

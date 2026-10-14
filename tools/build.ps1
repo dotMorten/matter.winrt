@@ -2,7 +2,7 @@
 param(
     [ValidateSet("x64", "arm64", "all")]
     [string] $Architecture = "all",
-    [string] $Version = "0.1.0-preview.9",
+    [string] $Version = "0.2.0-camera-commissioning.1",
     [string] $OutputDirectory = "artifacts",
     [switch] $SkipBuild,
     [string] $MatterSdkRoot,
@@ -11,7 +11,14 @@ param(
 
 $ErrorActionPreference = "Stop"
 $outerRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+$artifactPath = Join-Path $outerRoot $OutputDirectory
+$stagingPath = Join-Path $artifactPath "Matter.Windows.Controller.$Version"
+$packagePath = Join-Path $artifactPath "Matter.Windows.Controller.$Version.nupkg"
+if ((Test-Path $packagePath) -or (Test-Path $stagingPath) -or (Test-Path ($packagePath + ".zip"))) {
+    throw "Package versions are immutable. Select an unused version/output directory: $Version"
+}
 $architectures = if ($Architecture -eq "all") { @("x64", "arm64") } else { @($Architecture) }
+$buildInformation = @()
 $sdkRoot = if ([string]::IsNullOrWhiteSpace($MatterSdkRoot)) {
     Join-Path $outerRoot "matterforwindows"
 } else {
@@ -36,6 +43,17 @@ foreach ($targetArchitecture in $architectures) {
         if (-not (Test-Path (Join-Path $outputPath $asset))) {
             throw "Missing $targetArchitecture output: $asset"
         }
+        $informationPath = Join-Path $outputPath "build-info.json"
+        if (-not (Test-Path $informationPath)) {
+            throw "Missing matched build provenance for $targetArchitecture. Rebuild the component."
+        }
+        $information = Get-Content $informationPath -Raw | ConvertFrom-Json
+        if ($information.architecture -ne $targetArchitecture -or
+            $information.dllSha256 -ne (Get-FileHash (Join-Path $outputPath "Matter.Windows.Controller.dll")).Hash -or
+            $information.winmdSha256 -ne (Get-FileHash (Join-Path $outputPath "Matter.Windows.Controller.winmd")).Hash) {
+            throw "The $targetArchitecture metadata/DLL does not match its build provenance."
+        }
+        $buildInformation += $information
     }
 }
 
@@ -44,13 +62,12 @@ if (@($architectures).Count -ne 2) {
     return
 }
 
-$artifactPath = Join-Path $outerRoot $OutputDirectory
-$stagingPath = Join-Path $artifactPath "Matter.Windows.Controller.$Version"
-$packagePath = Join-Path $artifactPath "Matter.Windows.Controller.$Version.nupkg"
-New-Item -ItemType Directory -Force $artifactPath | Out-Null
-if (Test-Path $stagingPath) {
-    Remove-Item -Recurse -Force $stagingPath
+if ($buildInformation[0].sdkCommit -ne $buildInformation[1].sdkCommit -or
+    $buildInformation[0].nativeCommit -ne $buildInformation[1].nativeCommit -or
+    $buildInformation[0].winmdSha256 -ne $buildInformation[1].winmdSha256) {
+    throw "Architecture outputs must use the same SDK/native commits and WinMD."
 }
+New-Item -ItemType Directory -Force $artifactPath | Out-Null
 New-Item -ItemType Directory -Force `
     (Join-Path $stagingPath "winmd"), `
     (Join-Path $stagingPath "buildTransitive"), `
@@ -69,6 +86,12 @@ Copy-Item (Join-Path $outerRoot "winrt\nuget\Matter.Windows.Controller.props") `
     (Join-Path $stagingPath "buildTransitive")
 Copy-Item (Join-Path $outerRoot "winrt\nuget\Matter.Windows.Controller.targets") `
     (Join-Path $stagingPath "buildTransitive")
+Copy-Item (Join-Path $outerRoot "winrt\nuget\Matter.Windows.Controller.manifest") `
+    (Join-Path $stagingPath "winmd")
+[ordered]@{
+    packageVersion = $Version
+    builds = $buildInformation
+} | ConvertTo-Json -Depth 5 | Set-Content (Join-Path $stagingPath "build-info.json") -Encoding utf8
 Copy-Item (Join-Path $outerRoot "winrt\nuget\README.md") $stagingPath
 Copy-Item (Join-Path $sdkRoot "LICENSE") $stagingPath
 
@@ -94,11 +117,11 @@ $nuspec = @"
 </package>
 "@
 Set-Content -Path (Join-Path $stagingPath "Matter.Windows.Controller.nuspec") -Value $nuspec -Encoding utf8
-if (Test-Path $packagePath) {
-    Remove-Item -Force $packagePath
-}
 Compress-Archive -Path (Join-Path $stagingPath "*") -DestinationPath ($packagePath + ".zip")
 Move-Item ($packagePath + ".zip") $packagePath
 Remove-Item -Recurse -Force $stagingPath
+Get-FileHash $packagePath -Algorithm SHA256 |
+    ForEach-Object { "$($_.Hash)  $([System.IO.Path]::GetFileName($packagePath))" } |
+    Set-Content ($packagePath + ".sha256") -Encoding ascii
 
 Write-Host "Created $packagePath"

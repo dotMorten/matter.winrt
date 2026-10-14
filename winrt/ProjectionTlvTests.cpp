@@ -583,6 +583,42 @@ void TestTypedMediaSelections()
     }
     std::cout << "PASS typed Absent/AutoSelect/ExplicitId constructors, zero IDs and invalid/reserved combinations\n";
 }
+
+void TestCommissioningEvidence()
+{
+    Implementation::PairingState state;
+    Implementation::PairingDelegate delegate(state, false);
+    auto stage = chip::Controller::CommissioningStage::kReadCommissioningInfo;
+    auto failureStage = chip::Controller::CommissioningStage::kWiFiNetworkEnable;
+    std::vector<Implementation::NativeCommissioningProgress> progress;
+    delegate.Reset([&](auto const & update) { progress.push_back(update); });
+    delegate.OnCommissioningStageStart(chip::PeerId(), stage);
+    delegate.OnCommissioningStatusUpdate(chip::PeerId(), stage, CHIP_NO_ERROR);
+    Require(!state.complete && state.lastCompletedStage.Value() == stage,
+            "A progress event synthesized commissioning success");
+    delegate.OnCommissioningStageStart(chip::PeerId(), failureStage);
+    delegate.OnCommissioningStatusUpdate(chip::PeerId(), failureStage, CHIP_ERROR_TIMEOUT);
+    Require(state.lastCompletedStage.Value() == stage && state.activeStage.Value() == failureStage,
+            "A failed stage replaced the last successfully completed stage");
+    chip::Controller::CompletionStatus failure;
+    failure.err = CHIP_ERROR_TIMEOUT;
+    failure.failedStage.SetValue(failureStage);
+    delegate.OnCommissioningFailure(chip::PeerId(), failure);
+    Require(state.complete && state.error == CHIP_ERROR_TIMEOUT && state.hasCompletionStatus &&
+            state.lastCompletedStage.Value() == stage &&
+            progress.back().stage == failureStage && progress.back().error == CHIP_ERROR_TIMEOUT,
+            "Commissioning failure lost native stage/error evidence");
+    try
+    {
+        Implementation::ThrowCommissioningError(state);
+        Require(false, "A failed commissioning result did not throw");
+    }
+    catch (Implementation::ChipOperationError const & error)
+    {
+        Require(error.NativeError() == CHIP_ERROR_TIMEOUT, "Native commissioning status was reduced to HRESULT");
+    }
+    std::cout << "PASS commissioning progress is not success, last completed stage and native failure evidence\n";
+}
 } // namespace
 
 int main()
@@ -601,6 +637,7 @@ int main()
         TestAudioAdapterAndControls();
         TestAudioOwnership();
         TestTypedMediaSelections();
+        TestCommissioningEvidence();
     }
     catch (winrt::hresult_error const & error)
     {
