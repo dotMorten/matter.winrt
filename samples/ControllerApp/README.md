@@ -63,5 +63,222 @@ For an unpackaged build, add
 registration-free WinRT manifest entries and copies the architecture-matched
 component beside the app.
 
+## Camera receiver development
+
+The receiver is an opt-in development path, not part of the released NuGet
+package. Build matched SDK and WinRT outputs with the commands in the repository
+README, including `-BuildCameraSignaling`, then compile the sample against that
+checkout rather than the published package:
+
+```powershell
+dotnet build .\samples\ControllerApp\MatterControllerApp.csproj `
+    -p:Platform=x64 -p:Unpackaged=true `
+    -p:MatterCameraDevelopmentRoot=C:\src\matter.winrt
+```
+
+Alternatively, build against a locally produced camera package rather than
+direct development outputs:
+
+```powershell
+dotnet build .\samples\ControllerApp\MatterControllerApp.csproj `
+    -p:Platform=x64 -p:Unpackaged=true `
+    -p:MatterControllerPackageVersion=0.2.0-preview.1 -p:MatterCameraDevelopment=true
+```
+
+The package version property defaults to `0.2.0-preview.1`, which must first
+be built locally or downloaded from the Windows CI artifact into the local
+`artifacts` feed; it is not automatically published to nuget.org. Camera UI
+remains opt-in. For an MSIX build omit `-p:Unpackaged=true`.
+To produce an unsigned local MSIX, also set `GenerateAppxPackageOnBuild=true`,
+`AppxPackageSigningEnabled=false`, and `AppxBundle=Never`. Packaging does not
+verify launch, live media, or hardware interoperability.
+
+```powershell
+.\tools\test-camera-msix.ps1 -PackagePath C:\path\receiver.msix `
+    -ComponentDll .\out\win-winrt-x64\Matter.Windows.Controller.dll
+```
+
+This checks receiver content, camera activation registrations, and the exact
+native DLL in the package. The sample includes camera class registrations in
+both its unpackaged application manifest and MSIX manifest.
+The `.20` SDK adds typed camera audio protocol APIs and versioned session
+selection metadata. The receiver provides a separate WebRTC audio engine:
+video-only is the default, listening is explicit, and full-duplex push-to-talk
+requires a held button/key and Windows/WebView microphone permission. The SDK
+itself does not capture or decode media. Physical audibility and representative
+hardware acceptance remain unverified.
+
+Launch the resulting executable with `--camera`, select a commissioned device,
+and open **Camera receiver (development)**. Discover its camera endpoints and
+select **Allocate H.264 LiveView (640x480, 30 fps)**, then **Start receiver**.
+The sample requests 500000-2000000 bits per second and a 1000 ms key-frame
+interval; unsupported defaults fail explicitly. SDK callers can configure
+`MatterCameraVideoStreamOptions` for other supported H.264 LiveView bounds.
+Alternatively, read allocated streams and choose an **advertised allocated
+LiveView stream** whose reference you already own.
+The receiver reads advertised cluster revisions, features, and command lists
+before offering a stream selection, and refuses incomplete video/client-offer
+capabilities. The SDK refreshes these checks again at start.
+Stop, window close, and controller shutdown finish a pending sample allocation,
+end the signaling session, and deallocate the sample-owned stream exactly once.
+Externally allocated streams are never deallocated by the sample: stop the
+receiver before deallocating your owned stream. An uncertain allocation/release
+disables further camera starts/allocations for that node on the shared controller,
+including replacement receiver windows; it never guesses IDs or blindly repeats
+deallocation of a potentially reused stream ID.
+Proven local encoding failures report Validation and do not disable further
+allocation as an uncertain remote outcome. Unknown outcomes after dispatch
+retain the ownership safeguards above; the sample does not automatically retry.
+Explicit camera refusals such as DynamicConstraintError preserve their category
+and native IM status without imposing the uncertain-allocation lockout. A
+rejection transfers no owned stream; the sample does not deallocate one.
+The stream's `ReferenceCount` measures active transport use. Zero is valid for
+an unused allocation and does not prevent Start; it never establishes ownership
+of a stream obtained only through metadata reads. SDK callers may configure the
+reported G350 allocation profile (1920x1080, 30-120 fps, fixed 10000-bit/s bitrate,
+4000-ms key-frame interval) through `MatterCameraVideoStreamOptions`; the sample's
+default button does not silently switch to this profile or retry.
+
+Select the explicit media mode before **Start receiver**. Video-only omits
+AudioStreamID rather than requesting automatic selection with protocol null.
+Listening allocates an owned camera microphone stream after fresh capability,
+firmware, privacy and actual browser-codec checks. The adapter currently accepts
+Opus mono profiles at mutually supported sample rates and advertised source bit
+depths (8/16/24/32), with an AV bandwidth
+budget. It tries at most three advertised candidates, and only advances after
+correlated DynamicConstraintError/ConstraintError refusals. Unknown outcomes,
+resource exhaustion and command/state refusals are not format fallback signals.
+No vendor quirks or global G350 profile are installed. A five-minute successful
+profile hint never replaces fresh capability/privacy reads; firmware, capability,
+mode/bandwidth changes and relevant failures invalidate it.
+Camera source bit depth is allocation metadata, not browser PCM precision; the
+browser handles capture/resampling internally. Raw malformed entries such as
+`[24,0]` remain visible with direction/attribute/field warnings, but zero is never
+selected. Invalid speaker formats cannot disable valid receive-only listening.
+When fewer than three sample-rate candidates exist, lower 32000/20000-bit/s mono
+voice budgets fill the bounded fallback set only when below the initial budget.
+These are client budgets, not assumed hardware acceptance.
+
+Talkback additionally requires compatible speaker formats and reported full-duplex
+support; unsupported/unknown revisions and half-duplex fail explicitly before
+audio allocation. A muted/zero-volume camera speaker is not implicitly changed.
+Hold **Hold to talk**, Space, or Enter on that focused button only after transport
+connects. Starting a talk-capable session does not activate a microphone. Browser
+capture requests require a trusted explicit press, a current session token, an
+active window, a fresh privacy check and native authorization. The host leaves
+permission to Windows/WebView rather than granting it, and does not persist a
+permission grant. Release, backgrounding, disconnect, permission revocation,
+privacy, Stop and close stop local tracks; reconnect never resumes capture.
+Late permission completion stops its tracks without transmitting. Permission
+and sender activation waits are bounded. Half-duplex serialization and physical
+camera-speaker interoperability are not claimed.
+
+**Mute local playback**, local output volume and input/output device selection
+are media-client controls, not camera microphone/speaker controls. Device
+enumeration does not request capture. Unsupported/denied output selection and
+autoplay denial are local playback conditions, not camera disconnections.
+**Resume local playback** retries blocked playback explicitly. Capture and
+outgoing-packet indicators are independent; packet counts are not proof that
+the camera speaker is audible.
+During an authorized hold, redacted diagnostics distinguish capture enabled,
+input energy available/non-silence observed, current RTP packet/byte deltas,
+negotiated direction/Opus codec, and sender encoding/track activity. Input
+selection is reported as default or explicitly selected; the local input
+selector shows available device labels, and the active track's device label is
+shown locally during capture but never crosses the diagnostic bridge. No input samples, device identifiers,
+raw SDP, ICE candidates or credentials are retained or exported. Missing energy
+statistics remain unavailable rather than a silence verdict; energy is not proof
+of speech. Camera speaker mute/volume/bounds and selected endpoint/stream metadata
+are shown without changing remote controls. Camera playback always remains
+**unverified** until receiver-side evidence or an explicit user audibility report.
+
+Stop closes browser media and the Matter session before attempting owned audio
+and video release once. Partially completed audio preparation recovers the
+returned allocation before releasing it. Unknown allocation, canceled signaling,
+failed session cleanup or failed deallocation blocks new starts/allocations for
+that node on the shared controller. The bounded uncertainty ledger fails closed
+if full; closing/reopening a receiver window does not clear it. Reinitializing a
+controller is not remote reconciliation and must not be used to bypass this
+condition. Externally selected video streams remain externally owned.
+
+The WebView2 page is mapped only to `https://matter-camera.local/receiver.html`.
+This sample intentionally uses no ICE servers. The SDK's typed ICE-server input
+is for external receivers that explicitly configure matching servers and trust;
+it does not silently enable TURN or remote access in this receiver.
+The bridge validates that origin and a random per-session token, bounds message
+size and queue capacity, and denies other navigation, popups, downloads, and
+permissions except the explicit, gated microphone request. Fabric credentials and native controller pointers never enter web
+content. The peer connection intersects the selected camera stream codec with advertised
+receiver video codecs before generating an offer, uses no ICE servers, and a
+receive-only video transceiver. Audio is receive-only for listening, and sendrecv
+only for the explicitly selected supported talk mode; capture still starts off.
+Recording is not provided.
+Successful signaling and a received media track are not playback: playback
+requires a decoded video frame, a matching inbound codec from WebRTC stats,
+and decoded dimensions inside the allocated bounds.
+Unsupported/mismatched codecs or dimensions fail explicitly. Missing decoded
+video fails after 30 seconds; decoded-frame progress stopping for ten seconds
+also fails. Audio independently requires decoded, nonconcealed samples and
+local playback-clock progress; decoded audio stalls are bounded as well.
+Advertised software/hardware privacy attributes are subscribed, with one-second
+polling as a fail-closed backstop. Reports terminate media promptly when received;
+network/report latency is not an instantaneous remote guarantee. Malformed reports,
+subscription failures and privacy-read failures stop media. Stop and capture
+revocation bypass the browser's serialized signaling queue.
+Start failures show structured stage/category, native status
+when available, HRESULT, and retryability.
+Discovery, candidate-send, and remote End failures use the same structured diagnostics.
+The host closes the native session when stopping, closing the window, or
+receiving terminal failure.
+
+```powershell
+node --test .\tools\test-camera-receiver.cjs
+```
+
+For actual Windows WebView2 H.264/Opus encoding/decoding and track teardown,
+run the isolated synthetic loopback:
+
+```powershell
+.\tools\test-camera-receiver-media.ps1 `
+    -OutputDirectory C:\temp\matter-camera-media-test-1 `
+    -PackageVersion 0.2.0-preview.1
+```
+
+Use a fresh output directory for each run. The special test build starts neither
+the Matter controller nor the widget provider and does not stop a running widget
+host. It uses an isolated browser profile, denies all native permission requests,
+generates video and mono tones locally, and keeps playback sinks muted. The
+capture seam is replaced only in the test fixture with a synthetic WebAudio
+source; it never calls the real microphone API. Autoplay policy is relaxed only
+in this isolated test browser. Video-only, listening and synthetic full-duplex
+cases check real codec/sample progress, no automatic capture, rejection of
+untrusted DOM presses, capture revocation and repeated Stop. Stale fixture
+callbacks are scoped to their own peer/token. Results exclude SDP/ICE and
+explicitly report `physicalAudibilityValidated: false`. The fixture is excluded
+from ordinary sample builds and packages.
+Offers/answers/ICE, capture authorization/revocation and media states cross the
+actual native host/WebView message boundary. The host uses the same production
+media-message router as the receiver; capture authorization is synthetic only in
+this isolated test. Results require all audio/capture/media/diagnostic routes.
+
+The Node tests simulate peer connections, permissions and media statistics, and
+the NativeAOT tests exercise the production profile/ownership policies. They do
+not prove physical audibility or permission-dialog behavior; neither does the
+separate real-browser synthetic loopback. Validate video,
+audible camera-to-client listening, permitted push-to-talk audible at the camera,
+no capture after release/backgrounding/reconnect/privacy, and empty owned
+allocations after Stop on representative hardware. At least microphone-only and
+full-duplex devices are needed; half-duplex remains explicitly unsupported.
+Do not reset/re-pair devices or use externally owned allocations as cleanup targets.
+
+User-provided G350 evidence on 2026-10-13 establishes camera-to-PC listening and
+matched 24-bit Opus allocation/release in an isolated experiment. It does not
+establish successful PC-to-camera speaker playback: capture-on/outgoing indicators
+were observed but no camera sound was heard. Reproduce that case with the above
+diagnostics before attributing the failure to capture, negotiation, SDK/port
+signaling or camera playback. Complete AV-session cleanup, installed-package
+execution, ARM execution and a representative hardware matrix remain separate
+acceptance checks; package builds and synthetic loopback do not replace them.
+
 The component is a development preview. It uses file-backed operational keys
 and permits test device attestation by default.

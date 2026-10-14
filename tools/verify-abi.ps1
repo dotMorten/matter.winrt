@@ -7,6 +7,7 @@ param(
     [Parameter(Mandatory)]
     [string[]] $NativeDll,
     [string] $EquivalentWinmd,
+    [string] $ReportDirectory,
     [string] $ExpectedExports = (Join-Path $PSScriptRoot "..\abi\public-exports.txt")
 )
 
@@ -100,7 +101,7 @@ function Get-WinmdDeclarations {
             $attributes.Add($line)
             continue
         }
-        if ($line -notmatch "^(enum|interface|runtimeclass)\s+([A-Za-z_][A-Za-z0-9_]*)") {
+        if ($line -notmatch "^(enum|interface|runtimeclass|struct)\s+([A-Za-z_][A-Za-z0-9_]*)") {
             if ($line -notin @("{", "}")) {
                 $attributes.Clear()
             }
@@ -147,11 +148,15 @@ function Compare-WinmdDeclarations {
 
         $baselineBlock = @($Baseline[$key])
         $currentBlock = @($Current[$key])
-        if ($key.StartsWith("interface ")) {
+        if ($key.StartsWith("enum ")) {
+            $baselineBlock = @($baselineBlock | ForEach-Object { $_.TrimEnd(",") })
+            $currentBlock = @($currentBlock | ForEach-Object { $_.TrimEnd(",") })
+        }
+        if ($key.StartsWith("interface ") -or $key.StartsWith("struct ")) {
             $baselineSignature = @($baselineBlock | Where-Object { -not $_.StartsWith("[deprecated(") })
             $currentSignature = @($currentBlock | Where-Object { -not $_.StartsWith("[deprecated(") })
             if (($baselineSignature -join "`n") -ne ($currentSignature -join "`n")) {
-                $errors.Add("Changed existing WinRT interface: $key")
+                $errors.Add("Changed existing WinRT binary declaration: $key")
             }
             foreach ($deprecation in $baselineBlock | Where-Object { $_.StartsWith("[deprecated(") }) {
                 if ($deprecation -notin $currentBlock) {
@@ -218,6 +223,18 @@ try {
     $currentDeclarations = Get-WinmdDeclarations $currentIdl
     Write-Verbose "Comparing $($baselineDeclarations.Count) baseline declarations with $($currentDeclarations.Count) current declarations."
     $compatibilityErrors = @(Compare-WinmdDeclarations $baselineDeclarations $currentDeclarations)
+    if ($ReportDirectory) {
+        New-Item -ItemType Directory -Force $ReportDirectory | Out-Null
+        Copy-Item $baselineIdl (Join-Path $ReportDirectory "baseline.idl")
+        Copy-Item $currentIdl (Join-Path $ReportDirectory "current.idl")
+        [ordered]@{
+            baselineSha256 = (Get-FileHash $baselineWinmdPath).Hash
+            currentSha256 = (Get-FileHash $currentWinmdPath).Hash
+            baselineDeclarationCount = $baselineDeclarations.Count
+            currentDeclarationCount = $currentDeclarations.Count
+            errors = $compatibilityErrors
+        } | ConvertTo-Json -Depth 4 | Set-Content (Join-Path $ReportDirectory "api-comparison.json") -Encoding utf8
+    }
     if ($compatibilityErrors.Count -ne 0) {
         throw "WinMD compatibility validation failed:`n - $($compatibilityErrors -join "`n - ")"
     }

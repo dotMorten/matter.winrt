@@ -2,23 +2,47 @@
 param(
     [ValidateSet("x64", "arm64", "all")]
     [string] $Architecture = "all",
-    [string] $Version = "0.1.0-preview.9",
+    [string] $Version = "0.2.0-preview.1",
     [string] $OutputDirectory = "artifacts",
-    [switch] $SkipBuild
+    [switch] $SkipBuild,
+    [string] $MatterSdkRoot,
+    [switch] $BuildCameraSignaling
 )
 
 $ErrorActionPreference = "Stop"
+$powerShell = Join-Path $PSHOME "pwsh.exe"
 $outerRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+$artifactPath = Join-Path $outerRoot $OutputDirectory
+$stagingPath = Join-Path $artifactPath "Matter.Windows.Controller.$Version"
+$packagePath = Join-Path $artifactPath "Matter.Windows.Controller.$Version.nupkg"
+if ((Test-Path $packagePath) -or (Test-Path $stagingPath) -or (Test-Path ($packagePath + ".zip"))) {
+    throw "Package versions are immutable. Select an unused version/output directory: $Version"
+}
 $architectures = if ($Architecture -eq "all") { @("x64", "arm64") } else { @($Architecture) }
-$sdkRoot = Join-Path $outerRoot "matterforwindows"
+$buildInformation = @()
+$sdkRoot = if ([string]::IsNullOrWhiteSpace($MatterSdkRoot)) {
+    Join-Path $outerRoot "matterforwindows"
+} else {
+    (Resolve-Path $MatterSdkRoot).Path
+}
+if ($SkipBuild -and ($BuildCameraSignaling -or -not [string]::IsNullOrWhiteSpace($MatterSdkRoot))) {
+    throw "Explicit SDK or camera build options require rebuilding; they cannot verify existing outputs with -SkipBuild."
+}
 
 foreach ($targetArchitecture in $architectures) {
     $outputName = "win-winrt-$targetArchitecture"
     $outputPath = Join-Path $outerRoot "out\$outputName"
     if (-not $SkipBuild) {
-        & (Join-Path $PSScriptRoot "build-matter.ps1") -Architecture $targetArchitecture
+        # Keep repeated MSVC setup from accumulating tool paths beyond cmd.exe's command-line limit.
+        $matterArguments = @(
+            "-NoProfile", "-File", (Join-Path $PSScriptRoot "build-matter.ps1"),
+            "-Architecture", $targetArchitecture, "-MatterSdkRoot", $sdkRoot
+        )
+        if ($BuildCameraSignaling) { $matterArguments += "-BuildCameraSignaling" }
+        & $powerShell @matterArguments
         if ($LASTEXITCODE -ne 0) { throw "Matter SDK build failed for $targetArchitecture." }
-        & (Join-Path $PSScriptRoot "build-winrt.ps1") -Architecture $targetArchitecture
+        & $powerShell -NoProfile -File (Join-Path $PSScriptRoot "build-winrt.ps1") `
+            -Architecture $targetArchitecture -MatterSdkRoot $sdkRoot
         if ($LASTEXITCODE -ne 0) { throw "WinRT component build failed for $targetArchitecture." }
     }
 
@@ -27,6 +51,17 @@ foreach ($targetArchitecture in $architectures) {
             throw "Missing $targetArchitecture output: $asset"
         }
     }
+    $informationPath = Join-Path $outputPath "build-info.json"
+    if (-not (Test-Path $informationPath)) {
+        throw "Missing matched build provenance for $targetArchitecture. Rebuild the component."
+    }
+    $information = Get-Content $informationPath -Raw | ConvertFrom-Json
+    if ($information.architecture -ne $targetArchitecture -or
+        $information.dllSha256 -ne (Get-FileHash (Join-Path $outputPath "Matter.Windows.Controller.dll")).Hash -or
+        $information.winmdSha256 -ne (Get-FileHash (Join-Path $outputPath "Matter.Windows.Controller.winmd")).Hash) {
+        throw "The $targetArchitecture metadata/DLL does not match its build provenance."
+    }
+    $buildInformation += $information
 }
 
 if (@($architectures).Count -ne 2) {
@@ -34,13 +69,22 @@ if (@($architectures).Count -ne 2) {
     return
 }
 
-$artifactPath = Join-Path $outerRoot $OutputDirectory
-$stagingPath = Join-Path $artifactPath "Matter.Windows.Controller.$Version"
-$packagePath = Join-Path $artifactPath "Matter.Windows.Controller.$Version.nupkg"
-New-Item -ItemType Directory -Force $artifactPath | Out-Null
-if (Test-Path $stagingPath) {
-    Remove-Item -Recurse -Force $stagingPath
+if ($buildInformation.Count -ne 2 -or
+    $buildInformation[0].sdkCommit -ne $buildInformation[1].sdkCommit -or
+    $buildInformation[0].nativeCommit -ne $buildInformation[1].nativeCommit) {
+    throw "Architecture outputs must use the same SDK/native commits."
 }
+Write-Host "Validating architecture metadata equivalence (not published-baseline acceptance)."
+& {
+    . (Join-Path $sdkRoot "scripts\setup\windows.ps1") -Architecture x64
+    & (Join-Path $PSScriptRoot "verify-abi.ps1") `
+        -BaselineWinmd (Join-Path $outerRoot "out\win-winrt-x64\Matter.Windows.Controller.winmd") `
+        -CurrentWinmd (Join-Path $outerRoot "out\win-winrt-arm64\Matter.Windows.Controller.winmd") `
+        -EquivalentWinmd (Join-Path $outerRoot "out\win-winrt-x64\Matter.Windows.Controller.winmd") `
+        -NativeDll @((Join-Path $outerRoot "out\win-winrt-x64\Matter.Windows.Controller.dll"),
+                    (Join-Path $outerRoot "out\win-winrt-arm64\Matter.Windows.Controller.dll"))
+}
+New-Item -ItemType Directory -Force $artifactPath | Out-Null
 New-Item -ItemType Directory -Force `
     (Join-Path $stagingPath "winmd"), `
     (Join-Path $stagingPath "buildTransitive"), `
@@ -52,6 +96,10 @@ Copy-Item (Join-Path $outerRoot "out\win-winrt-x64\Matter.Windows.Controller.dll
 Copy-Item (Join-Path $outerRoot "out\win-winrt-arm64\Matter.Windows.Controller.dll") `
     (Join-Path $stagingPath "runtimes\win-arm64\native")
 Copy-Item (Join-Path $outerRoot "out\win-winrt-x64\Matter.Windows.Controller.winmd") `
+    (Join-Path $stagingPath "runtimes\win-x64\native")
+Copy-Item (Join-Path $outerRoot "out\win-winrt-arm64\Matter.Windows.Controller.winmd") `
+    (Join-Path $stagingPath "runtimes\win-arm64\native")
+Copy-Item (Join-Path $outerRoot "out\win-winrt-x64\Matter.Windows.Controller.winmd") `
     (Join-Path $stagingPath "winmd")
 Copy-Item (Join-Path $outerRoot "winrt\Matter.Windows.Controller.xml") `
     (Join-Path $stagingPath "winmd")
@@ -59,8 +107,14 @@ Copy-Item (Join-Path $outerRoot "winrt\nuget\Matter.Windows.Controller.props") `
     (Join-Path $stagingPath "buildTransitive")
 Copy-Item (Join-Path $outerRoot "winrt\nuget\Matter.Windows.Controller.targets") `
     (Join-Path $stagingPath "buildTransitive")
+Copy-Item (Join-Path $outerRoot "winrt\nuget\Matter.Windows.Controller.manifest") `
+    (Join-Path $stagingPath "winmd")
+[ordered]@{
+    packageVersion = $Version
+    builds = $buildInformation
+} | ConvertTo-Json -Depth 5 | Set-Content (Join-Path $stagingPath "build-info.json") -Encoding utf8
 Copy-Item (Join-Path $outerRoot "winrt\nuget\README.md") $stagingPath
-Copy-Item (Join-Path $outerRoot "matterforwindows\LICENSE") $stagingPath
+Copy-Item (Join-Path $sdkRoot "LICENSE") $stagingPath
 
 $nuspec = @"
 <?xml version="1.0"?>
@@ -84,11 +138,11 @@ $nuspec = @"
 </package>
 "@
 Set-Content -Path (Join-Path $stagingPath "Matter.Windows.Controller.nuspec") -Value $nuspec -Encoding utf8
-if (Test-Path $packagePath) {
-    Remove-Item -Force $packagePath
-}
 Compress-Archive -Path (Join-Path $stagingPath "*") -DestinationPath ($packagePath + ".zip")
 Move-Item ($packagePath + ".zip") $packagePath
 Remove-Item -Recurse -Force $stagingPath
+Get-FileHash $packagePath -Algorithm SHA256 |
+    ForEach-Object { "$($_.Hash)  $([System.IO.Path]::GetFileName($packagePath))" } |
+    Set-Content ($packagePath + ".sha256") -Encoding ascii
 
 Write-Host "Created $packagePath"

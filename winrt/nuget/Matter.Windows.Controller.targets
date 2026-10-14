@@ -18,8 +18,9 @@
   <ItemGroup Condition="'$(_MatterControllerRid)' != ''">
     <Content Include="$(MSBuildThisFileDirectory)..\runtimes\$(_MatterControllerRid)\native\Matter.Windows.Controller.dll">
       <Link>Matter.Windows.Controller.dll</Link>
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+      <!-- A selected package may have older timestamps than a prior development build. -->
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+      <CopyToPublishDirectory>Always</CopyToPublishDirectory>
       <Visible>false</Visible>
     </Content>
   </ItemGroup>

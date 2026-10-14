@@ -47,6 +47,448 @@
     <member name="P:Matter.Windows.Controller.ControllerOptions.AllowTestAttestation">
       <summary>Gets or sets whether failed device attestation may continue. This preview option must not be enabled in production.</summary>
     </member>
+    <member name="P:Matter.Windows.Controller.ControllerOptions.EnableCameraSignaling">
+      <summary>Gets or sets whether to host the development camera requestor. Defaults to false and requires a signaling-enabled native build.</summary>
+    </member>
+
+    <member name="T:Matter.Windows.Controller.MatterControllerCameraDiscovery">
+      <summary>Reads typed Descriptor metadata and discovers camera cluster composition without establishing media.</summary>
+    </member>
+    <member name="M:Matter.Windows.Controller.MatterControllerCameraDiscovery.#ctor(Matter.Windows.Controller.MatterController)">
+      <summary>Binds discovery to an existing controller.</summary>
+    </member>
+    <member name="M:Matter.Windows.Controller.MatterControllerCameraDiscovery.ReadDescriptorAsync(System.UInt64,System.UInt16)">
+      <summary>Reads typed numeric and structured Descriptor lists for the specified endpoint.</summary>
+    </member>
+    <member name="M:Matter.Windows.Controller.MatterControllerCameraDiscovery.DiscoverCamerasAsync(System.UInt64)">
+      <summary>Walks advertised endpoint topology from endpoint zero and returns camera endpoints. Discovery is cancellable and bounded to 128 endpoints and 120 seconds.</summary>
+    </member>
+    <member name="T:Matter.Windows.Controller.MatterEndpointDescriptor">
+      <summary>Contains typed endpoint topology, cluster identifiers, and device-type metadata.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterEndpointDescriptor.EndpointId">
+      <summary>Gets the advertised endpoint identifier.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterEndpointDescriptor.PartsList">
+      <summary>Gets typed child endpoint identifiers.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterEndpointDescriptor.ServerClusters">
+      <summary>Gets typed server cluster identifiers.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterEndpointDescriptor.ClientClusters">
+      <summary>Gets typed client cluster identifiers.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterEndpointDescriptor.DeviceTypes">
+      <summary>Gets typed device-type identifiers and revisions.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterEndpointDescriptor.HasCameraClusters">
+      <summary>Indicates Camera AV Stream Management and WebRTC Transport Provider composition, not playback support.</summary>
+    </member>
+    <member name="T:Matter.Windows.Controller.MatterDeviceType">
+      <summary>Contains an advertised device-type identifier and revision.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterDeviceType.DeviceTypeId">
+      <summary>Gets the device-type identifier.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterDeviceType.Revision">
+      <summary>Gets the nonzero advertised device-type revision.</summary>
+    </member>
+    <member name="T:Matter.Windows.Controller.MatterControllerCamera">
+      <summary>Starts client-offer, video-only camera signaling on an opt-in controller.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterControllerCamera.IsSignalingSupported">
+      <summary>Reports whether this native component was built with camera signaling. This is not endpoint initialization or media support.</summary>
+    </member>
+    <member name="M:Matter.Windows.Controller.MatterControllerCamera.ReadAllocatedVideoStreamsAsync(System.UInt64,System.UInt16)">
+      <summary>Reads validated typed allocated stream metadata without allocating or owning streams. Unknown codecs remain explicit; absent optional booleans remain null.</summary>
+    </member>
+    <member name="M:Matter.Windows.Controller.MatterControllerCamera.TryStartWithAllocatedVideoStreamAsync(System.UInt64,System.UInt16,System.UInt16,System.String)">
+      <summary>Uses the same preflight and signaling path as StartWithAllocatedVideoStreamAsync, returning either a session or structured failure. Cancellation remains WinRT cancellation. No result implies video playback.</summary>
+    </member>
+    <member name="T:Matter.Windows.Controller.MatterCameraStartResult">
+      <summary>Contains either a successfully created signaling session or a structured failure, never both.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterCameraStartResult.Succeeded">
+      <summary>Indicates signaling-session creation succeeded, not that media is playing.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterCameraStartResult.Session">
+      <summary>Gets the created session on success, or null on failure.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterCameraStartResult.Failure">
+      <summary>Gets structured failure on failure, or null on success.</summary>
+    </member>
+    <member name="T:Matter.Windows.Controller.MatterCameraFailure">
+      <summary>Preserves start stage, category, HRESULT, native status when known, retryability, and diagnostic text.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterCameraFailure.Stage">
+      <summary>Gets the stage that failed.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterCameraFailure.Category">
+      <summary>Gets the known failure category, or Unknown without guessing.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterCameraFailure.HResult">
+      <summary>Gets the original HRESULT.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterCameraFailure.HasNativeError">
+      <summary>Indicates a native Matter status is available.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterCameraFailure.NativeError">
+      <summary>Gets the exact native Matter status when HasNativeError is true. Zero when no native error is available.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterCameraFailure.Retryable">
+      <summary>Indicates a timeout, connection failure, or resource shortage may permit a later retry after resolving the condition. This does not initiate automatic retries.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterCameraFailure.Message">
+      <summary>Gets a diagnostic message without SDP or ICE payloads.</summary>
+    </member>
+    <member name="T:Matter.Windows.Controller.MatterCameraStage">
+      <summary>Identifies validation, descriptor, privacy, stream selection, or signaling start stages.</summary>
+    </member>
+    <member name="T:Matter.Windows.Controller.MatterCameraFailureCategory">
+      <summary>Classifies known start failures while preserving raw status separately.</summary>
+    </member>
+    <member name="T:Matter.Windows.Controller.MatterCameraVideoStream">
+      <summary>Contains immutable allocated video stream metadata. This object does not own allocation or authorize media playback.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterCameraVideoStream.StreamId">
+      <summary>Gets the advertised allocated stream identifier.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterCameraVideoStream.StreamUsage">
+      <summary>Gets the raw checked-in stream usage enum value.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterCameraVideoStream.IsLiveView">
+      <summary>Indicates the stream advertises LiveView usage.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterCameraVideoStream.VideoCodec">
+      <summary>Gets the raw video codec enum: 0 H264, 1 HEVC, 2 VVC, 3 AV1. Unknown values remain explicit and must not be treated as supported codecs.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterCameraVideoStream.MinimumFrameRate">
+      <summary>Gets the advertised minimum frame rate.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterCameraVideoStream.MaximumFrameRate">
+      <summary>Gets the advertised maximum frame rate.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterCameraVideoStream.MinimumWidth">
+      <summary>Gets minimum frame width in pixels.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterCameraVideoStream.MinimumHeight">
+      <summary>Gets minimum frame height in pixels.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterCameraVideoStream.MaximumWidth">
+      <summary>Gets maximum frame width in pixels.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterCameraVideoStream.MaximumHeight">
+      <summary>Gets maximum frame height in pixels.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterCameraVideoStream.MinimumBitRate">
+      <summary>Gets minimum bitrate.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterCameraVideoStream.MaximumBitRate">
+      <summary>Gets maximum bitrate.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterCameraVideoStream.KeyFrameInterval">
+      <summary>Gets the advertised key-frame interval.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterCameraVideoStream.ReferenceCount">
+      <summary>Gets the advertised transport-use reference count without modifying ownership. Zero is valid for a newly allocated, unused stream and does not prevent signaling start.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterCameraVideoStream.WatermarkEnabled">
+      <summary>Gets watermark state, or null when the optional field is absent.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterCameraVideoStream.OnScreenDisplayEnabled">
+      <summary>Gets on-screen-display state, or null when the optional field is absent.</summary>
+    </member>
+    <member name="M:Matter.Windows.Controller.MatterControllerCamera.#ctor(Matter.Windows.Controller.MatterController)">
+      <summary>Binds camera operations to an existing controller.</summary>
+    </member>
+    <member name="M:Matter.Windows.Controller.MatterControllerCamera.StartWithAllocatedVideoStreamAsync(System.UInt64,System.UInt16,System.UInt16,System.String)">
+      <summary>Validates camera composition, advertised privacy, and an allocated LiveView stream, then sends a bounded video-only SDP offer with AudioStreamID omitted rather than present-null automatic audio selection. The caller owns stream allocation, capability and codec selection, and deallocation. Successful completion is not media playback. Failed or canceled starts attempt bounded remote cleanup for known protocol identities.</summary>
+    </member>
+    <member name="T:Matter.Windows.Controller.MatterCameraSession">
+      <summary>Owns one local signaling session. Explicitly await CloseAsync before releasing caller-owned streams. Controller shutdown invalidates the session.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterCameraSession.Handle">
+      <summary>Gets a controller-local handle distinct from the protocol session identifier.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterCameraSession.NodeId">
+      <summary>Gets the authenticated camera node identifier.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterCameraSession.CameraEndpointId">
+      <summary>Gets the selected camera endpoint.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterCameraSession.RequestorEndpointId">
+      <summary>Gets the owned local requestor endpoint.</summary>
+    </member>
+    <member name="M:Matter.Windows.Controller.MatterCameraSession.WaitForSignalAsync(System.UInt32)">
+      <summary>Consumes the next queued typed signal. Only one concurrent consumer is allowed. The timeout must be between 1 and 30000 milliseconds; timeout or cancellation stops waiting without ending the session.</summary>
+    </member>
+    <member name="M:Matter.Windows.Controller.MatterCameraSession.SendCandidatesAsync(System.Collections.Generic.IReadOnlyList{Matter.Windows.Controller.MatterCameraIceCandidate})">
+      <summary>Sends between 1 and 16 validated ICE candidates through authenticated large-payload transport.</summary>
+    </member>
+    <member name="M:Matter.Windows.Controller.MatterCameraSession.CloseAsync">
+      <summary>Idempotently attempts remote End with a 30-second deadline and releases the local requestor. Caller-owned streams are not deallocated.</summary>
+    </member>
+    <member name="T:Matter.Windows.Controller.MatterCameraIceCandidate">
+      <summary>Contains copied, bounded ICE fields without exposing native handles.</summary>
+    </member>
+    <member name="M:Matter.Windows.Controller.MatterCameraIceCandidate.#ctor(System.String,System.String,System.Int32)">
+      <summary>Copies candidate text up to 2048 UTF-8 bytes and MID up to 256 bytes. Empty MID and line index -1 represent absent optional fields. The reserved line index 65535 is rejected.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterCameraIceCandidate.Candidate">
+      <summary>Gets the owned ICE candidate text. Do not log this private network information by default.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterCameraIceCandidate.Mid">
+      <summary>Gets the media identifier, or an empty string when absent.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterCameraIceCandidate.LineIndex">
+      <summary>Gets the media-line index, or -1 when absent.</summary>
+    </member>
+    <member name="T:Matter.Windows.Controller.MatterCameraSignal">
+      <summary>Contains an owned answer, candidate batch, remote End, or native failure.</summary>
+    </member>
+    <member name="T:Matter.Windows.Controller.MatterCameraOperationResult">
+      <summary>Contains either successful completion with no failure, or structured operation failure diagnostics.</summary>
+    </member>
+    <member name="T:Matter.Windows.Controller.MatterCameraIceServer">
+      <summary>Contains owned bounded STUN/TURN URI arrays, independent optional username/credential presence and nullable CAID. Do not log these values.</summary>
+    </member>
+    <member name="M:Matter.Windows.Controller.MatterCameraIceServer.#ctor(Windows.Foundation.Collections.IVectorView{System.String},System.Boolean,System.String,System.Boolean,System.String,System.Nullable{System.UInt16})">
+      <summary>Copies one to four URIs of at most 512 UTF-8 bytes. Username and credential are at most 256 bytes; absent values must be empty, and explicitly present empty values stay present.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterCameraIceServer.Urls">
+      <summary>Gets the owned URI list. Server reachability and full URI syntax validation belong to the media engine.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterCameraIceServer.HasUsername">
+      <summary>Gets username presence independently of its text value.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterCameraIceServer.Username">
+      <summary>Gets the optional username text. Do not log it.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterCameraIceServer.HasCredential">
+      <summary>Gets credential presence independently of its text value.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterCameraIceServer.Credential">
+      <summary>Gets the optional credential. Do not log it or place it in untrusted web content.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterCameraIceServer.CertificateAuthorityId">
+      <summary>Gets nullable CAID, preserving zero. Applications must configure supported receiver trust themselves.</summary>
+    </member>
+    <member name="M:Matter.Windows.Controller.MatterControllerCamera.TryStartWithIceServersAsync(System.UInt64,System.UInt16,System.UInt16,System.String,Windows.Foundation.Collections.IVectorView{Matter.Windows.Controller.MatterCameraIceServer})">
+      <summary>Starts the supported client-offer flow with zero to four caller-supplied servers and structured diagnostics. Configure the receiver with matching servers before generating its offer; null lists and entries are invalid.</summary>
+    </member>
+    <member name="T:Matter.Windows.Controller.MatterCameraSessionState">
+      <summary>Describes signaling-only lifecycle, independent of receiver connectivity and decoded playback.</summary>
+    </member>
+    <member name="F:Matter.Windows.Controller.MatterCameraSessionState.Negotiating">
+      <summary>The provider response and answer have not both arrived.</summary>
+    </member>
+    <member name="F:Matter.Windows.Controller.MatterCameraSessionState.Established">
+      <summary>The provider response and answer have both arrived. This does not prove media connectivity or playback.</summary>
+    </member>
+    <member name="F:Matter.Windows.Controller.MatterCameraSessionState.Ending">
+      <summary>Owned bounded cleanup is in progress.</summary>
+    </member>
+    <member name="F:Matter.Windows.Controller.MatterCameraSessionState.Closed">
+      <summary>The peer ended the session, local resources were released, or the controller closed.</summary>
+    </member>
+    <member name="F:Matter.Windows.Controller.MatterCameraSessionState.Failed">
+      <summary>The native session failed; consume its queued failure and close to release resources.</summary>
+    </member>
+    <member name="M:Matter.Windows.Controller.MatterCameraSession.GetStateAsync">
+      <summary>Gets a signaling-only snapshot without consuming signals or granting authorization. A snapshot can immediately become stale.</summary>
+    </member>
+    <member name="T:Matter.Windows.Controller.MatterCameraCapabilities">
+      <summary>Contains typed endpoint composition and advertised stream-management and transport cluster capabilities.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterCameraCapabilities.Descriptor">
+      <summary>Gets the camera endpoint descriptor.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterCameraCapabilities.StreamManagement">
+      <summary>Gets the advertised Camera AV Stream Management capabilities.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterCameraCapabilities.TransportProvider">
+      <summary>Gets the advertised WebRTC Transport Provider capabilities.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterCameraCapabilities.SupportsVideo">
+      <summary>Gets whether the camera advertises the video feature.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterCameraCapabilities.SupportsClientOffer">
+      <summary>Gets whether video and the required offer, response, ICE, and End commands are advertised. This is not playback or revision certification.</summary>
+    </member>
+    <member name="T:Matter.Windows.Controller.MatterCameraClusterCapabilities">
+      <summary>Contains typed cluster revision, raw feature map, and attribute/command lists. Unknown feature bits are preserved.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterCameraClusterCapabilities.ClusterId">
+      <summary>Gets the advertised cluster identifier.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterCameraClusterCapabilities.Revision">
+      <summary>Gets the advertised nonzero cluster revision.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterCameraClusterCapabilities.FeatureMap">
+      <summary>Gets the raw advertised feature bits.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterCameraClusterCapabilities.Attributes">
+      <summary>Gets the advertised attribute identifiers.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterCameraClusterCapabilities.AcceptedCommands">
+      <summary>Gets the advertised accepted command identifiers.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterCameraClusterCapabilities.GeneratedCommands">
+      <summary>Gets the advertised generated command identifiers.</summary>
+    </member>
+    <member name="M:Matter.Windows.Controller.MatterControllerCamera.ReadCapabilitiesAsync(System.UInt64,System.UInt16)">
+      <summary>Reads typed advertised camera capabilities with cancellation and a bounded deadline.</summary>
+    </member>
+    <member name="F:Matter.Windows.Controller.MatterCameraStage.Capabilities">
+      <summary>Reading and validating advertised features and command paths.</summary>
+    </member>
+    <member name="M:Matter.Windows.Controller.MatterControllerCamera.IsPrivacyEnabledAsync(System.UInt64,System.UInt16)">
+      <summary>Reads advertised software/hardware privacy with cancellation and a 30-second aggregate deadline. Returns true if either is enabled; missing attributes are not invented and read/type errors fail explicitly. This snapshot is not instantaneous enforcement.</summary>
+    </member>
+    <member name="M:Matter.Windows.Controller.MatterControllerCamera.AllocateVideoStreamAsync(System.UInt64,System.UInt16,Matter.Windows.Controller.MatterCameraVideoStreamOptions)">
+      <summary>Allocates an H.264 LiveView stream after capability, privacy, sensor and usage validation. Options are snapshotted before background work. Success transfers cleanup responsibility for the returned ID, not a transport-reference-count increment. Close signaling before deallocating the owned stream exactly once. Cancellation or validation failure deallocates a known returned stream; missing IDs or cleanup failure may leave ownership uncertain.</summary>
+    </member>
+    <member name="M:Matter.Windows.Controller.MatterControllerCamera.TryAllocateVideoStreamAsync(System.UInt64,System.UInt16,Matter.Windows.Controller.MatterCameraVideoStreamOptions)">
+      <summary>Allocates with a typed stream-or-failure result and exact known native diagnostics. Success owns cleanup of the returned stream; ReferenceCount zero is valid before transport use. Cancellation remains cancellation; never guess a missing ID or blindly retry uncertain deallocation.</summary>
+    </member>
+    <member name="M:Matter.Windows.Controller.MatterControllerCamera.DeallocateVideoStreamAsync(System.UInt64,System.UInt16,System.UInt16)">
+      <summary>Deallocates a caller-owned stream by its returned ID. Close its signaling session first; the device may refuse deallocation while transports still use the stream. Bounded cleanup continues if the caller cancels its wait; an uncertain outcome must not be blindly retried.</summary>
+    </member>
+    <member name="M:Matter.Windows.Controller.MatterControllerCamera.TryDeallocateVideoStreamAsync(System.UInt64,System.UInt16,System.UInt16)">
+      <summary>Deallocates a caller-owned stream with structured diagnostics. Cleanup continues after wait cancellation. Failure is not proof that repeating the command against a potentially reused stream ID is safe.</summary>
+    </member>
+    <member name="T:Matter.Windows.Controller.MatterCameraVideoStreamOptions">
+      <summary>Configures nonzero, ordered H.264 LiveView allocation bounds. Defaults are exact 640x480, 30 fps, 500000-2000000 bits per second and a 1000 ms key-frame interval. Unsupported parameters are not silently relaxed.</summary>
+    </member>
+    <member name="M:Matter.Windows.Controller.MatterCameraVideoStreamOptions.#ctor">
+      <summary>Creates the default H.264 LiveView allocation options.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterCameraVideoStreamOptions.MinimumWidth">
+      <summary>Gets or sets the minimum width in pixels; defaults to 640.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterCameraVideoStreamOptions.MaximumWidth">
+      <summary>Gets or sets the maximum width in pixels; defaults to 640.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterCameraVideoStreamOptions.MinimumHeight">
+      <summary>Gets or sets the minimum height in pixels; defaults to 480.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterCameraVideoStreamOptions.MaximumHeight">
+      <summary>Gets or sets the maximum height in pixels; defaults to 480.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterCameraVideoStreamOptions.MinimumFrameRate">
+      <summary>Gets or sets the minimum frame rate in frames per second; defaults to 30.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterCameraVideoStreamOptions.MaximumFrameRate">
+      <summary>Gets or sets the maximum frame rate in frames per second; defaults to 30.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterCameraVideoStreamOptions.MinimumBitRate">
+      <summary>Gets or sets the minimum bitrate in bits per second; defaults to 500000.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterCameraVideoStreamOptions.MaximumBitRate">
+      <summary>Gets or sets the maximum bitrate in bits per second; defaults to 2000000.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterCameraVideoStreamOptions.KeyFrameInterval">
+      <summary>Gets or sets the nonzero key-frame interval in milliseconds; defaults to 1000.</summary>
+    </member>
+    <member name="T:Matter.Windows.Controller.MatterCameraVideoStreamAllocationResult">
+      <summary>Contains either an owned stream ID with validated metadata or a structured failure. Metadata reads alone do not acquire cleanup ownership; a zero transport-reference count is valid.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterCameraVideoStreamAllocationResult.Succeeded">
+      <summary>Gets whether cleanup responsibility for the returned stream ID was successfully transferred to the caller.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterCameraVideoStreamAllocationResult.Stream">
+      <summary>Gets validated stream metadata, or null on failure. The caller must deallocate the owned stream after signaling closes. ReferenceCount measures transport use, not caller-specific allocation ownership.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterCameraVideoStreamAllocationResult.Failure">
+      <summary>Gets the structured failure, or null on success.</summary>
+    </member>
+    <member name="F:Matter.Windows.Controller.MatterCameraStage.StreamAllocation">
+      <summary>Allocating and recovering the camera's returned stream ID.</summary>
+    </member>
+    <member name="F:Matter.Windows.Controller.MatterCameraStage.StreamDeallocation">
+      <summary>Deallocating the owned stream by its exact returned ID, including rollback cleanup.</summary>
+    </member>
+    <member name="F:Matter.Windows.Controller.MatterCameraFailureCategory.DynamicConstraintError">
+      <summary>The peer explicitly refused the command with the IM DynamicConstraintError status. This does not establish resource contention or media failure. The native code is preserved and no automatic retry is recommended.</summary>
+    </member>
+    <member name="F:Matter.Windows.Controller.MatterCameraFailureCategory.ConstraintError">
+      <summary>The peer explicitly refused the command with the IM ConstraintError status. This is distinct from malformed response metadata; the exact native status is preserved.</summary>
+    </member>
+    <member name="F:Matter.Windows.Controller.MatterCameraFailureCategory.CommandRejected">
+      <summary>An explicit IM refusal not represented by a more specific category. Inspect the preserved native status. Rejected allocation does not imply unknown ownership; failed deallocation remains an uncertain release.</summary>
+    </member>
+    <member name="T:Matter.Windows.Controller.MatterCameraDiscoveryResult">
+      <summary>Contains a successful typed camera collection or a structured discovery failure. An empty collection is not a failure.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterCameraDiscoveryResult.Succeeded">
+      <summary>Gets whether topology discovery succeeded, including reachable non-camera nodes.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterCameraDiscoveryResult.Cameras">
+      <summary>Gets all discovered camera endpoints, or null on failure.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterCameraDiscoveryResult.Failure">
+      <summary>Gets the structured validation or discovery failure, or null on success.</summary>
+    </member>
+    <member name="M:Matter.Windows.Controller.MatterControllerCameraDiscovery.TryDiscoverCamerasAsync(System.UInt64)">
+      <summary>Discovers camera topology with structured diagnostics and a bounded deadline. Cancellation remains WinRT cancellation.</summary>
+    </member>
+    <member name="F:Matter.Windows.Controller.MatterCameraStage.Discovery">
+      <summary>Reading and classifying endpoint topology.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterCameraOperationResult.Succeeded">
+      <summary>Gets whether the operation completed successfully.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterCameraOperationResult.Failure">
+      <summary>Gets the structured failure, or null on success.</summary>
+    </member>
+    <member name="M:Matter.Windows.Controller.MatterCameraSession.TrySendCandidatesAsync(Windows.Foundation.Collections.IVectorView{Matter.Windows.Controller.MatterCameraIceCandidate})">
+      <summary>Sends a bounded ICE batch with structured validation and native diagnostics. Cancellation remains WinRT cancellation.</summary>
+    </member>
+    <member name="M:Matter.Windows.Controller.MatterCameraSession.TryCloseAsync">
+      <summary>Attempts bounded remote End and releases local resources before returning structured failure if End fails. Cleanup completes even when the caller cancels its wait.</summary>
+    </member>
+    <member name="F:Matter.Windows.Controller.MatterCameraStage.IceCandidates">
+      <summary>Sending an ICE candidate batch.</summary>
+    </member>
+    <member name="F:Matter.Windows.Controller.MatterCameraStage.SessionEnd">
+      <summary>Ending and releasing an owned signaling session.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterCameraSignal.SessionHandle">
+      <summary>Gets the local session handle for correlation.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterCameraSignal.Kind">
+      <summary>Gets the signaling message kind.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterCameraSignal.Sdp">
+      <summary>Gets an owned SDP answer. Do not log SDP by default.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterCameraSignal.Candidates">
+      <summary>Gets the typed, owned ICE candidate batch.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterCameraSignal.NativeError">
+      <summary>Gets the native Matter error code for a failure signal.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterCameraSignal.ProtocolSessionId">
+      <summary>Gets the nullable on-wire session identifier for a correlated signal. Null means no authenticated identity is known; zero is a valid bound identifier.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterCameraSignal.EndReason">
+      <summary>Gets the checked-in protocol reason for a remote End signal.</summary>
+    </member>
+    <member name="T:Matter.Windows.Controller.MatterCameraSignalKind">
+      <summary>Distinguishes answer, candidates, remote End, and native failure signals.</summary>
+    </member>
+    <member name="F:Matter.Windows.Controller.MatterCameraSignalKind.Answer">
+      <summary>A correlated SDP answer was received.</summary>
+    </member>
+    <member name="F:Matter.Windows.Controller.MatterCameraSignalKind.Candidates">
+      <summary>A correlated ICE batch was received.</summary>
+    </member>
+    <member name="F:Matter.Windows.Controller.MatterCameraSignalKind.End">
+      <summary>The authenticated camera ended the session.</summary>
+    </member>
+    <member name="F:Matter.Windows.Controller.MatterCameraSignalKind.Failure">
+      <summary>The native signaling session failed.</summary>
+    </member>
 
     <member name="T:Matter.Windows.Controller.OnNetworkCommissioningParameters">
       <summary>Describes on-network commissioning, including multi-admin commissioning with a sharing code.</summary>
@@ -137,6 +579,102 @@
     </member>
     <member name="P:Matter.Windows.Controller.CommissioningProgressEventArgs.Message">
       <summary>Gets a human-readable description of the current stage.</summary>
+    </member>
+
+    <member name="T:Matter.Windows.Controller.MatterCommissioningStage">
+      <summary>Identifies an application-facing commissioning stage. Unknown native stages remain observable through NativeStageId.</summary>
+    </member>
+    <member name="T:Matter.Windows.Controller.MatterCommissioningTransport">
+      <summary>Identifies the transport associated with a commissioning progress update.</summary>
+    </member>
+    <member name="T:Matter.Windows.Controller.MatterCommissioningOutcome">
+      <summary>Identifies whether commissioning succeeded, failed, or timed out.</summary>
+    </member>
+    <member name="T:Matter.Windows.Controller.MatterCommissioningFailureKind">
+      <summary>Classifies common terminal commissioning failures without requiring diagnostic-message parsing.</summary>
+    </member>
+    <member name="T:Matter.Windows.Controller.MatterNetworkInterfaceSelectionMode">
+      <summary>Controls whether operational Matter traffic uses normal routing, prefers one interface, or requires one interface.</summary>
+    </member>
+    <member name="T:Matter.Windows.Controller.MatterNetworkInterfaceType">
+      <summary>Identifies the physical network technology reported for an interface.</summary>
+    </member>
+
+    <member name="T:Matter.Windows.Controller.MatterNetworkInterfaceSelection">
+      <summary>Captures the operational network-interface policy for one commissioning operation.</summary>
+    </member>
+    <member name="M:Matter.Windows.Controller.MatterNetworkInterfaceSelection.#ctor(Matter.Windows.Controller.MatterNetworkInterfaceSelectionMode,System.UInt64)">
+      <summary>Creates an immutable interface selection.</summary>
+      <param name="mode">The automatic, preferred, or required selection policy.</param>
+      <param name="interfaceId">The identifier returned by MatterNetworkInterfaceProvider, or zero for automatic mode.</param>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterNetworkInterfaceSelection.Mode"><summary>Gets the captured selection policy.</summary></member>
+    <member name="P:Matter.Windows.Controller.MatterNetworkInterfaceSelection.InterfaceId"><summary>Gets the selected adapter identifier, or zero for automatic mode.</summary></member>
+
+    <member name="T:Matter.Windows.Controller.MatterNetworkInterface">
+      <summary>Describes a Windows network interface eligible for Matter operational discovery.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterNetworkInterface.Id"><summary>Gets the adapter identifier used by MatterNetworkInterfaceSelection. Re-enumerate before later operations because identifiers are valid only while adapters exist.</summary></member>
+    <member name="P:Matter.Windows.Controller.MatterNetworkInterface.InterfaceIndex"><summary>Gets the Windows interface index.</summary></member>
+    <member name="P:Matter.Windows.Controller.MatterNetworkInterface.Name"><summary>Gets the adapter name.</summary></member>
+    <member name="P:Matter.Windows.Controller.MatterNetworkInterface.Type"><summary>Gets the reported network technology.</summary></member>
+    <member name="P:Matter.Windows.Controller.MatterNetworkInterface.IsConnected"><summary>Gets whether the interface is currently up.</summary></member>
+    <member name="P:Matter.Windows.Controller.MatterNetworkInterface.SupportsIpv6"><summary>Gets whether the interface currently has an IPv6 address.</summary></member>
+    <member name="P:Matter.Windows.Controller.MatterNetworkInterface.SupportsMulticast"><summary>Gets whether the interface supports multicast.</summary></member>
+    <member name="P:Matter.Windows.Controller.MatterNetworkInterface.IsVirtual"><summary>Gets whether the adapter name identifies a common virtual or VPN interface.</summary></member>
+
+    <member name="T:Matter.Windows.Controller.MatterCommissioningProgress">
+      <summary>Provides an immutable snapshot of commissioning progress. It never contains setup codes or network credentials.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterCommissioningProgress.Stage"><summary>Gets the current application-facing stage.</summary></member>
+    <member name="P:Matter.Windows.Controller.MatterCommissioningProgress.LastCompletedStage"><summary>Gets the last successfully completed application-facing stage.</summary></member>
+    <member name="P:Matter.Windows.Controller.MatterCommissioningProgress.NativeStageId"><summary>Gets the native Matter SDK stage identifier, or -1 when no native stage applies.</summary></member>
+    <member name="P:Matter.Windows.Controller.MatterCommissioningProgress.Transport"><summary>Gets the transport associated with the current stage.</summary></member>
+    <member name="P:Matter.Windows.Controller.MatterCommissioningProgress.ElapsedTime"><summary>Gets the elapsed time since this commissioning operation started.</summary></member>
+    <member name="P:Matter.Windows.Controller.MatterCommissioningProgress.DiagnosticMessage"><summary>Gets stable, nonlocalized diagnostic text that does not contain credentials or setup codes.</summary></member>
+    <member name="P:Matter.Windows.Controller.MatterCommissioningProgress.DisplayMessage"><summary>Gets text suitable for display by preview applications. Applications should localize their own text based on Stage for production UI.</summary></member>
+    <member name="P:Matter.Windows.Controller.MatterCommissioningProgress.NetworkInterfaceId"><summary>Gets the selected operational interface identifier, or zero for automatic selection.</summary></member>
+    <member name="P:Matter.Windows.Controller.MatterCommissioningProgress.NetworkInterfaceName"><summary>Gets the selected operational interface name, or an empty string when automatic selection has not chosen one.</summary></member>
+    <member name="P:Matter.Windows.Controller.MatterCommissioningProgress.AttemptNumber"><summary>Gets the one-based attempt number for the current operation.</summary></member>
+    <member name="P:Matter.Windows.Controller.MatterCommissioningProgress.IsRetrying"><summary>Gets whether the update reports a recoverable retry rather than terminal failure.</summary></member>
+
+    <member name="T:Matter.Windows.Controller.MatterCommissioningResult">
+      <summary>Contains the structured terminal result of commissioning. Cancellation instead completes the WinRT asynchronous operation in the canceled state.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterCommissioningResult.Succeeded"><summary>Gets whether commissioning completed successfully.</summary></member>
+    <member name="P:Matter.Windows.Controller.MatterCommissioningResult.Outcome"><summary>Gets the terminal success, failure, or timeout outcome.</summary></member>
+    <member name="P:Matter.Windows.Controller.MatterCommissioningResult.FailureKind"><summary>Gets the classified failure kind, or Unknown when no reliable classification is available.</summary></member>
+    <member name="P:Matter.Windows.Controller.MatterCommissioningResult.FailedStage"><summary>Gets the application-facing stage active when the operation failed.</summary></member>
+    <member name="P:Matter.Windows.Controller.MatterCommissioningResult.LastCompletedStage"><summary>Gets the last successfully completed application-facing stage.</summary></member>
+    <member name="P:Matter.Windows.Controller.MatterCommissioningResult.NativeStageId"><summary>Gets the native Matter SDK stage identifier, or -1 when unavailable.</summary></member>
+    <member name="P:Matter.Windows.Controller.MatterCommissioningResult.NativeErrorCode"><summary>Gets the native CHIP error integer, or zero when unavailable.</summary></member>
+    <member name="P:Matter.Windows.Controller.MatterCommissioningResult.DiagnosticMessage"><summary>Gets terminal diagnostic text without setup codes or network credentials.</summary></member>
+    <member name="P:Matter.Windows.Controller.MatterCommissioningResult.NetworkInterfaceId"><summary>Gets the requested operational interface identifier, or zero for automatic selection.</summary></member>
+    <member name="P:Matter.Windows.Controller.MatterCommissioningResult.Node"><summary>Gets the commissioned node after success, or null after failure or timeout.</summary></member>
+
+    <member name="T:Matter.Windows.Controller.MatterNetworkInterfaceProvider">
+      <summary>Enumerates network interfaces that may participate in Matter operational discovery.</summary>
+    </member>
+    <member name="M:Matter.Windows.Controller.MatterNetworkInterfaceProvider.GetEligibleNetworkInterfacesAsync">
+      <summary>Enumerates current non-loopback interfaces. Virtual and VPN interfaces remain visible and are identified by IsVirtual.</summary>
+      <returns>A snapshot of currently eligible interfaces.</returns>
+    </member>
+
+    <member name="T:Matter.Windows.Controller.MatterControllerCommissioning">
+      <summary>Adds structured BLE network commissioning, progress, cancellation, and per-operation interface selection without changing the MatterController ABI.</summary>
+    </member>
+    <member name="M:Matter.Windows.Controller.MatterControllerCommissioning.#ctor(Matter.Windows.Controller.MatterController)">
+      <summary>Creates commissioning operations for a controller.</summary>
+      <param name="controller">The controller that will own commissioned nodes.</param>
+    </member>
+    <member name="E:Matter.Windows.Controller.MatterControllerCommissioning.ProgressChanged">
+      <summary>Occurs in order on a worker thread when commissioning changes stage or retries. Handlers are drained before the operation reaches its terminal state and must marshal UI work to the application's dispatcher.</summary>
+    </member>
+    <member name="M:Matter.Windows.Controller.MatterControllerCommissioning.CommissionBleAsync(Matter.Windows.Controller.BleNetworkCommissioningParameters,Matter.Windows.Controller.MatterNetworkInterfaceSelection)">
+      <summary>Commissions a factory-reset Wi-Fi or Thread device over BLE. Interface selection is captured at start and applies to operational DNS-SD, address resolution, CASE, and commissioning-complete traffic, not BLE. Canceling the returned operation stops native pairing and completes in the canceled state.</summary>
+      <param name="parameters">BLE setup data and exactly one Wi-Fi or Thread credential set.</param>
+      <param name="interfaceSelection">The operational-interface policy, or null to use automatic routing.</param>
+      <returns>A structured success, failure, or timeout result.</returns>
     </member>
 
     <member name="T:Matter.Windows.Controller.CommissionedNode">
@@ -325,5 +863,80 @@
     <member name="M:Matter.Windows.Controller.MatterController.GetLevelControlCluster(System.UInt64,System.UInt16)"><summary>Creates a typed Level Control cluster client.</summary><param name="nodeId">The node identifier.</param><param name="endpointId">The endpoint identifier.</param><returns>The cluster client.</returns></member>
     <member name="M:Matter.Windows.Controller.MatterController.GetBasicInformationCluster(System.UInt64,System.UInt16)"><summary>Creates a typed Basic Information cluster client.</summary><param name="nodeId">The node identifier.</param><param name="endpointId">The endpoint identifier.</param><returns>The cluster client.</returns></member>
     <member name="M:Matter.Windows.Controller.MatterController.CloseAsync"><summary>Stops subscriptions, shuts down the Matter stack, and releases the storage directory.</summary><returns>An asynchronous close action.</returns></member>
+    <member name="T:Matter.Windows.Controller.MatterCameraStreamSelectionKind">
+      <summary>Distinguishes field omission, automatic selection by present protocol null, and explicit numeric media IDs.</summary>
+    </member>
+    <member name="T:Matter.Windows.Controller.MatterCameraStreamSelection">
+      <summary>Immutable selection for one medium. Only ExplicitId accepts a required nonreserved ID; zero is valid. Absent and AutoSelect require a null ID.</summary>
+    </member>
+    <member name="T:Matter.Windows.Controller.MatterCameraAudioFormatCapabilities">
+      <summary>Preserves raw advertised codec, channel, sample-rate and bit-depth values, including unusable entries such as zero. Tolerant negotiation may select only usable advertised formats, never replacements; all-invalid lists remain visible but are not eligible. Source allocation depth is not browser PCM precision.</summary>
+    </member>
+    <member name="T:Matter.Windows.Controller.MatterCameraAudioCapabilities">
+      <summary>Camera-specific protocol capability snapshot, raw audio formats, nullable advertised remote mute/volume/talk state, privacy and bandwidth. Does not prove sound or authorize local capture.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterCameraAudioCapabilities.SupportsListening">
+      <summary>Gets whether the supported camera composition/revisions, known microphone codec and complete audio command path are advertised. Media-engine format intersection and audible playback remain independent.</summary>
+    </member>
+    <member name="T:Matter.Windows.Controller.MatterCameraAudioStream">
+      <summary>Preserves allocated audio ID, raw usage/codec, channels, rate, bitrate, depth and transport ReferenceCount. Zero references are valid; reading this object acquires no cleanup ownership.</summary>
+    </member>
+    <member name="T:Matter.Windows.Controller.MatterCameraAudioStreamOptions">
+      <summary>Requires a caller-negotiated Opus/AAC-LC LiveView format, 1-8 channels, nonzero rate/bitrate and 8/16/24/32 bit depth. Default options are deliberately not allocatable.</summary>
+    </member>
+    <member name="T:Matter.Windows.Controller.MatterCameraAudioStreamAllocationResult">
+      <summary>Contains an exact validated audio allocation with cleanup responsibility, or structured failure with exact known status. Unknown outcomes must not be retried blindly.</summary>
+    </member>
+    <member name="M:Matter.Windows.Controller.MatterControllerCamera.ReadAudioCapabilitiesAsync(System.UInt64,System.UInt16)">
+      <summary>Reads camera-only audio formats and advertised controls with cancellation and a 120-second aggregate deadline. Requires Camera device type revision 1-2, generated camera/provider revision 2 and requestor-client composition; absent optional state stays null.</summary>
+    </member>
+    <member name="M:Matter.Windows.Controller.MatterControllerCamera.ReadAllocatedAudioStreamsAsync(System.UInt64,System.UInt16)">
+      <summary>Reads raw typed audio allocation metadata without acquiring release ownership. Malformed, duplicate or reserved IDs are errors.</summary>
+    </member>
+    <member name="M:Matter.Windows.Controller.MatterControllerCamera.AllocateAudioStreamAsync(System.UInt64,System.UInt16,Matter.Windows.Controller.MatterCameraAudioStreamOptions)">
+      <summary>Snapshots caller-negotiated options, checks microphone formats, LiveView usage, bandwidth and privacy, and validates the exact returned ID/readback. Cancellation or readback failure releases a known owned ID once; uncertain outcomes block another allocation on this controller endpoint.</summary>
+    </member>
+    <member name="M:Matter.Windows.Controller.MatterControllerCamera.TryAllocateAudioStreamAsync(System.UInt64,System.UInt16,Matter.Windows.Controller.MatterCameraAudioStreamOptions)">
+      <summary>Allocates audio with a typed stream-or-failure result and preserved native rejection categories. Performs no automatic retries; cancellation remains cancellation.</summary>
+    </member>
+    <member name="M:Matter.Windows.Controller.MatterControllerCamera.DeallocateAudioStreamAsync(System.UInt64,System.UInt16,System.UInt16)">
+      <summary>Releases this controller's exact owned audio ID once after local media and signaling close. External, wrong-peer/endpoint and already-attempted IDs are rejected without dispatch; failure retains uncertain ownership.</summary>
+    </member>
+    <member name="M:Matter.Windows.Controller.MatterControllerCamera.TryDeallocateAudioStreamAsync(System.UInt64,System.UInt16,System.UInt16)">
+      <summary>Performs owned audio release with structured diagnostics. Cleanup continues after wait cancellation. Finish cleanup before controller shutdown; never blindly repeat a failed release.</summary>
+    </member>
+    <member name="M:Matter.Windows.Controller.MatterControllerCamera.StartSessionAsync(System.UInt64,System.UInt16,Matter.Windows.Controller.MatterCameraStreamSelection,Matter.Windows.Controller.MatterCameraStreamSelection,System.String,Windows.Foundation.Collections.IVectorView{Matter.Windows.Controller.MatterCameraIceServer})">
+      <summary>Starts a camera-only session with independently tagged media selections, bounded caller SDP and an explicit zero-to-four ICE-server collection. Checks selected LiveView formats and privacy before/after signaling. Startup failure/cancellation closes the session, not externally selected allocations. Media directions, permissions and playback belong to the media engine.</summary>
+    </member>
+    <member name="M:Matter.Windows.Controller.MatterControllerCamera.TryStartSessionAsync(System.UInt64,System.UInt16,Matter.Windows.Controller.MatterCameraStreamSelection,Matter.Windows.Controller.MatterCameraStreamSelection,System.String,Windows.Foundation.Collections.IVectorView{Matter.Windows.Controller.MatterCameraIceServer})">
+      <summary>Starts explicit audio/video selection with structured stage/status diagnostics. Both media absent is invalid. Automatic selection never grants allocation cleanup ownership.</summary>
+    </member>
+    <member name="M:Matter.Windows.Controller.MatterControllerCamera.WriteMicrophoneMuteAsync(System.UInt64,System.UInt16,System.Boolean)">
+      <summary>Writes advertised remote camera microphone mute only. Does not change local capture or camera privacy; privacy prevents unmuting.</summary>
+    </member>
+    <member name="M:Matter.Windows.Controller.MatterControllerCamera.WriteSpeakerMuteAsync(System.UInt64,System.UInt16,System.Boolean)">
+      <summary>Writes advertised remote camera speaker mute only. Does not change local output or camera privacy; privacy prevents unmuting.</summary>
+    </member>
+    <member name="M:Matter.Windows.Controller.MatterControllerCamera.WriteMicrophoneVolumeAsync(System.UInt64,System.UInt16,System.Byte)">
+      <summary>Writes advertised remote microphone level within ordered device min/max bounds. Never unmutes or changes local capture volume.</summary>
+    </member>
+    <member name="M:Matter.Windows.Controller.MatterControllerCamera.WriteSpeakerVolumeAsync(System.UInt64,System.UInt16,System.Byte)">
+      <summary>Writes advertised remote speaker level within ordered device min/max bounds. Never unmutes or changes local playback volume.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterCameraSession.RequestedVideoSelection">
+      <summary>Gets the immutable originally requested video selection, independently of the provider's resolved ID.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterCameraSession.RequestedAudioSelection">
+      <summary>Gets the immutable originally requested audio selection, independently of the provider's resolved ID.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterCameraSession.VideoStreamId">
+      <summary>Gets the nullable resolved video ID captured after the provider response; zero is valid. Does not grant release ownership.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterCameraSession.AudioStreamId">
+      <summary>Gets the nullable resolved audio ID captured after the provider response; zero is valid. Does not grant release ownership.</summary>
+    </member>
+    <member name="P:Matter.Windows.Controller.MatterCameraSession.ProtocolSessionId">
+      <summary>Gets the nullable protocol identity captured after the provider response, including zero. Separate from the private session Handle; retained after close.</summary>
+    </member>
   </members>
 </doc>

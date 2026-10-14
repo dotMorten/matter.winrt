@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Package xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+         xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+         xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+         IgnorableNamespaces="uap rescap">
+  <Identity Name="Matter.CombinedSdk.Acceptance" Publisher="CN=SDK Acceptance" Version="1.0.0.0" ProcessorArchitecture="x64" />
+  <Properties>
+    <DisplayName>Combined Matter SDK acceptance</DisplayName>
+    <PublisherDisplayName>SDK Acceptance</PublisherDisplayName>
+    <Logo>logo.png</Logo>
+  </Properties>
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.19041.0" MaxVersionTested="10.0.26100.0" />
+  </Dependencies>
+  <Resources><Resource Language="en-us" /></Resources>
+  <Applications>
+    <Application Id="Acceptance" Executable="CombinedConsumer.exe" EntryPoint="Windows.FullTrustApplication">
+      <uap:VisualElements DisplayName="Combined Matter SDK acceptance" Description="Package loading acceptance"
+                          BackgroundColor="transparent" Square150x150Logo="logo.png" Square44x44Logo="logo.png" />
+    </Application>
+  </Applications>
+  <Extensions>
+    <Extension Category="windows.activatableClass.inProcessServer">
+      <InProcessServer><Path>Matter.Windows.Controller.dll</Path></InProcessServer>
+    </Extension>
+  </Extensions>
+  <Capabilities>
+    <Capability Name="internetClient" />
+    <Capability Name="privateNetworkClientServer" />
+    <rescap:Capability Name="runFullTrust" />
+  </Capabilities>
+</Package>

@@ -1,12 +1,17 @@
 [CmdletBinding()]
 param(
     [ValidateSet("x64", "arm64")]
-    [string] $Architecture = "x64"
+    [string] $Architecture = "x64",
+    [string] $MatterSdkRoot
 )
 
 $ErrorActionPreference = "Stop"
 $matterWinRtRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
-$matterSdkRoot = Join-Path $matterWinRtRoot "matterforwindows"
+$matterSdkRoot = if ([string]::IsNullOrWhiteSpace($MatterSdkRoot)) {
+    Join-Path $matterWinRtRoot "matterforwindows"
+} else {
+    (Resolve-Path $MatterSdkRoot).Path
+}
 $winrtRoot = Join-Path $matterWinRtRoot "winrt"
 $sdkOutputDirectory = Join-Path $matterSdkRoot "out\matter-winrt-sdk-$Architecture"
 $matterLibrary = Join-Path $sdkOutputDirectory "obj\out\matter-winrt-sdk-target\matter-controller-sdk.lib"
@@ -104,6 +109,7 @@ $compilerArguments = @(
     "/GR"
     "/Gy"
     "/Gw"
+    "/bigobj"
     "/MD"
     "/O2"
     "/std:c++20"
@@ -111,6 +117,11 @@ $compilerArguments = @(
 )
 $compilerArguments += $definitions | ForEach-Object { "/D$_" }
 $compilerArguments += $includeDirectories | ForEach-Object { "/I$_" }
+$compilerResponseFile = Join-Path $outputDirectory "compile-options.rsp"
+[System.IO.File]::WriteAllLines(
+    $compilerResponseFile,
+    [string[]]($compilerArguments | ForEach-Object { '"' + $_ + '"' }),
+    [System.Text.UTF8Encoding]::new($false))
 
 $sources = @(
     (Join-Path $generatedDirectory "module.g.cpp")
@@ -167,5 +178,31 @@ if ($LASTEXITCODE -ne 0) {
 if (-not (Test-Path $dll) -or -not (Test-Path $winmd)) {
     throw "The WinRT component outputs were not produced for $Architecture."
 }
+
+$sdkCommit = (& git -C $matterSdkRoot rev-parse HEAD).Trim()
+if ($LASTEXITCODE -ne 0) { throw "Unable to resolve the native SDK commit." }
+$componentCommit = (& git -C $matterWinRtRoot rev-parse HEAD).Trim()
+if ($LASTEXITCODE -ne 0) { throw "Unable to resolve the WinRT SDK commit." }
+$nativePin = ((& git -C $matterWinRtRoot ls-files --stage matterforwindows) -split '\s+')[1]
+if ($LASTEXITCODE -ne 0) { throw "Unable to resolve the declared native dependency." }
+$sourceChanges = @(& git -C $matterWinRtRoot status --porcelain --untracked-files=no --ignore-submodules=none)
+if ($LASTEXITCODE -ne 0) { throw "Unable to inspect SDK source state." }
+$nativeChanges = @(& git -C $matterSdkRoot status --porcelain --untracked-files=no --ignore-submodules=none)
+if ($LASTEXITCODE -ne 0) { throw "Unable to inspect native SDK source state." }
+$nativeSourceDirty = $nativeChanges.Count -ne 0
+[ordered]@{
+    architecture = $Architecture
+    sdkCommit = $componentCommit
+    sourceDirty = ($sourceChanges.Count -ne 0) -or $nativeSourceDirty
+    nativeCommit = $sdkCommit
+    nativePin = $nativePin
+    nativeSourceDirty = $nativeSourceDirty
+    developmentOverride = ($sdkCommit -ne $nativePin) -or $nativeSourceDirty
+    msvc = (Get-Item (Get-Command cl.exe).Source).VersionInfo.FileVersion
+    windowsSdk = $windowsSdkVersion
+    nativeLibrarySha256 = (Get-FileHash $matterLibrary -Algorithm SHA256).Hash
+    winmdSha256 = (Get-FileHash $winmd -Algorithm SHA256).Hash
+    dllSha256 = (Get-FileHash $dll -Algorithm SHA256).Hash
+} | ConvertTo-Json | Set-Content (Join-Path $outputDirectory "build-info.json") -Encoding utf8
 
 Write-Host "Built WinRT component: $dll"

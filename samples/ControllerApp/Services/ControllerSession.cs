@@ -11,6 +11,7 @@ public sealed class ControllerSession
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
         "MatterControllerApp");
     private readonly Dictionary<string, string> deviceNames = [];
+    private MatterControllerCommissioning? detailedCommissioning;
 
     public MatterController? Controller { get; private set; }
     public string? InitializationError { get; private set; }
@@ -39,8 +40,13 @@ public sealed class ControllerSession
                     StoragePath = storagePath,
                     AllowTestAttestation = true
                 };
+#if MATTER_CAMERA_DEVELOPMENT
+                options.EnableCameraSignaling = Environment.GetCommandLineArgs().Contains("--camera", StringComparer.Ordinal);
+#endif
                 Controller = await MatterController.CreateAsync(options);
                 Controller.CommissioningProgress += OnCommissioningProgress;
+                detailedCommissioning = new MatterControllerCommissioning(Controller);
+                detailedCommissioning.ProgressChanged += OnDetailedCommissioningProgress;
                 InitializationError = null;
                 NodesChanged?.Invoke(this, EventArgs.Empty);
             }
@@ -105,14 +111,20 @@ public sealed class ControllerSession
         CommissionedNode node;
         try
         {
-            node = await new MatterControllerNetworkCommissioning(controller).CommissionBleAsync(
+            MatterCommissioningResult result = await RequireDetailedCommissioning().CommissionBleAsync(
                 new BleNetworkCommissioningParameters
             {
                 NodeId = nodeId,
                 SetupPinCode = setupPinCode,
                 LongDiscriminator = longDiscriminator,
                 WiFi = new WiFiNetworkCredentials(wiFiSsid, wiFiPassphrase)
-            });
+            },
+                new MatterNetworkInterfaceSelection(MatterNetworkInterfaceSelectionMode.Automatic, 0));
+            if (!result.Succeeded || result.Node is null)
+            {
+                throw new InvalidOperationException(result.DiagnosticMessage);
+            }
+            node = result.Node;
         }
         catch (Exception exception) when (
             exception.Message.Contains("already exists", StringComparison.OrdinalIgnoreCase))
@@ -185,7 +197,15 @@ public sealed class ControllerSession
                 return;
             }
 
+#if MATTER_CAMERA_DEVELOPMENT
+            await MatterControllerApp.Camera.CameraReceiverWindow.CloseAllAsync();
+#endif
             Controller.CommissioningProgress -= OnCommissioningProgress;
+            if (detailedCommissioning is not null)
+            {
+                detailedCommissioning.ProgressChanged -= OnDetailedCommissioningProgress;
+                detailedCommissioning = null;
+            }
             await Controller.CloseAsync();
             Controller = null;
             NodesChanged?.Invoke(this, EventArgs.Empty);
@@ -202,6 +222,16 @@ public sealed class ControllerSession
 
     private void OnCommissioningProgress(MatterController sender, CommissioningProgressEventArgs args) =>
         CommissioningProgress?.Invoke(this, $"{args.Stage}: {args.Message}");
+
+    private void OnDetailedCommissioningProgress(
+        MatterControllerCommissioning sender,
+        MatterCommissioningProgress args) =>
+        CommissioningProgress?.Invoke(
+            this,
+            $"{args.Stage}: {args.DisplayMessage} ({args.ElapsedTime.TotalSeconds:F1}s)");
+
+    private MatterControllerCommissioning RequireDetailedCommissioning() =>
+        detailedCommissioning ?? throw new InvalidOperationException("The Matter controller is not initialized.");
 
     private static ulong AllocateNodeId(MatterController controller)
     {

@@ -53,6 +53,15 @@ public partial class App : Application
     /// <param name="args">Details about the launch request and process.</param>
     protected override void OnLaunched(Microsoft.UI.Xaml.LaunchActivatedEventArgs args)
     {
+#if MATTER_CAMERA_MEDIA_TEST
+        if (Program.CameraMediaTestResultPath is string resultPath)
+        {
+            Window = new Camera.CameraReceiverMediaTestWindow(resultPath);
+            DispatcherQueue = Microsoft.UI.Dispatching.DispatcherQueue.GetForCurrentThread();
+            Window.Activate();
+            return;
+        }
+#endif
         ControllerInitialization = ControllerSession.InitializeAsync();
         Window = new MainWindow();
         DispatcherQueue = Microsoft.UI.Dispatching.DispatcherQueue.GetForCurrentThread();

@@ -116,7 +116,22 @@
         <ActivatableClass ActivatableClassId="Matter.Windows.Controller.CommandPath" ThreadingModel="both" />
         <ActivatableClass ActivatableClassId="Matter.Windows.Controller.ControllerOptions" ThreadingModel="both" />
         <ActivatableClass ActivatableClassId="Matter.Windows.Controller.MatterController" ThreadingModel="both" />
+        <ActivatableClass ActivatableClassId="Matter.Windows.Controller.MatterControllerCommissioning" ThreadingModel="both" />
+        <ActivatableClass ActivatableClassId="Matter.Windows.Controller.MatterNetworkInterfaceProvider" ThreadingModel="both" />
+        <ActivatableClass ActivatableClassId="Matter.Windows.Controller.MatterNetworkInterfaceSelection" ThreadingModel="both" />
+        <ActivatableClass ActivatableClassId="Matter.Windows.Controller.MatterControllerNetworkCommissioning" ThreadingModel="both" />
+        <ActivatableClass ActivatableClassId="Matter.Windows.Controller.MatterControllerRecovery" ThreadingModel="both" />
+        <ActivatableClass ActivatableClassId="Matter.Windows.Controller.BleNetworkCommissioningParameters" ThreadingModel="both" />
+        <ActivatableClass ActivatableClassId="Matter.Windows.Controller.WiFiNetworkCredentials" ThreadingModel="both" />
+        <ActivatableClass ActivatableClassId="Matter.Windows.Controller.ThreadNetworkCredentials" ThreadingModel="both" />
         <ActivatableClass ActivatableClassId="Matter.Windows.Controller.OnNetworkCommissioningParameters" ThreadingModel="both" />
+        <ActivatableClass ActivatableClassId="Matter.Windows.Controller.MatterControllerCameraDiscovery" ThreadingModel="both" />
+        <ActivatableClass ActivatableClassId="Matter.Windows.Controller.MatterControllerCamera" ThreadingModel="both" />
+        <ActivatableClass ActivatableClassId="Matter.Windows.Controller.MatterCameraIceCandidate" ThreadingModel="both" />
+        <ActivatableClass ActivatableClassId="Matter.Windows.Controller.MatterCameraIceServer" ThreadingModel="both" />
+        <ActivatableClass ActivatableClassId="Matter.Windows.Controller.MatterCameraVideoStreamOptions" ThreadingModel="both" />
+        <ActivatableClass ActivatableClassId="Matter.Windows.Controller.MatterCameraAudioStreamOptions" ThreadingModel="both" />
+        <ActivatableClass ActivatableClassId="Matter.Windows.Controller.MatterCameraStreamSelection" ThreadingModel="both" />
       </InProcessServer>
     </Extension>
   </Extensions>
@@ -128,5 +143,6 @@
     <DeviceCapability Name="bluetooth" />
     <DeviceCapability Name="pointOfService" />
     <DeviceCapability Name="webcam" />
+    <DeviceCapability Name="microphone" />
   </Capabilities>
 </Package>

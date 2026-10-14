@@ -15,11 +15,18 @@
     <WinUISDKReferences>false</WinUISDKReferences>
     <EnableMsixTooling>true</EnableMsixTooling>
     <ImplicitUsings>enable</ImplicitUsings>
+    <DefaultItemExcludes>$(DefaultItemExcludes);obj\**;bin\**</DefaultItemExcludes>
     <Nullable>enable</Nullable>
     <LangVersion>13.0</LangVersion>
     <DefineConstants>$(DefineConstants);DISABLE_XAML_GENERATED_MAIN</DefineConstants>
     <WindowsPackageType Condition="'$(Unpackaged)' == 'true'">None</WindowsPackageType>
     <WindowsAppSDKSelfContained Condition="'$(Unpackaged)' == 'true'">true</WindowsAppSDKSelfContained>
+    <MatterControllerPackageVersion Condition="'$(MatterControllerPackageVersion)' == ''">0.2.0-preview.1</MatterControllerPackageVersion>
+    <MatterCameraDevelopment Condition="'$(MatterCameraDevelopmentRoot)' != ''">true</MatterCameraDevelopment>
+    <MatterCameraDevelopment Condition="'$(MatterCameraMediaTest)' == 'true'">true</MatterCameraDevelopment>
+    <DefineConstants Condition="'$(MatterCameraDevelopment)' == 'true'">$(DefineConstants);MATTER_CAMERA_DEVELOPMENT</DefineConstants>
+    <DefineConstants Condition="'$(MatterCameraMediaTest)' == 'true'">$(DefineConstants);MATTER_CAMERA_MEDIA_TEST</DefineConstants>
+    <CsWinRTIncludes Condition="'$(MatterCameraDevelopmentRoot)' != ''">Matter.Windows.Controller</CsWinRTIncludes>
   </PropertyGroup>
 
   <ItemGroup>
@@ -33,6 +40,12 @@
     <Content Include="Assets\AppIcon.ico" />
     <Content Include="Assets\Wide310x150Logo.scale-200.png" />
     <Content Include="Widgets\MatterControlsTemplate.json" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(MatterCameraMediaTest)' == 'true'">
+    <Content Include="..\..\tools\camera-receiver-media-test.js" Link="Camera\camera-receiver-media-test.js">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
   </ItemGroup>
 
   <ItemGroup>
@@ -62,8 +75,24 @@
     <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.2" />
     <PackageReference Include="Microsoft.Windows.CsWinRT" Version="2.3.1" />
     <PackageReference Include="Microsoft.Windows.SDK.BuildTools.WinApp" Version="0.6.1" />
-    <PackageReference Include="Matter.Windows.Controller" Version="0.1.0-preview.9" />
+    <PackageReference Include="Matter.Windows.Controller" Version="$(MatterControllerPackageVersion)" Condition="'$(MatterCameraDevelopmentRoot)' == ''" />
     <PackageReference Include="WinUIEx" Version="2.9.3" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(MatterCameraDevelopmentRoot)' != ''">
+    <CsWinRTInputs Include="$(MatterCameraDevelopmentRoot)\out\win-winrt-$(Platform)\Matter.Windows.Controller.winmd" />
+    <Content Include="$(MatterCameraDevelopmentRoot)\out\win-winrt-$(Platform)\Matter.Windows.Controller.dll">
+      <Link>Matter.Windows.Controller.dll</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </Content>
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(MatterCameraDevelopment)' == 'true'">
+    <Content Include="Camera\receiver.html;Camera\receiver.js;Camera\receiver.css;Camera\realtime-audio.js">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </Content>
   </ItemGroup>
 
   <!--

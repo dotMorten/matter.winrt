@@ -8,6 +8,7 @@ namespace MatterControllerApp.Pages;
 
 public sealed partial class DeviceDetailsPage : Page
 {
+    private KnownDevice? cameraDevice;
     public DeviceDetailsViewModel ViewModel { get; } = new(App.ControllerSession);
 
     public DeviceDetailsPage()
@@ -29,6 +30,7 @@ public sealed partial class DeviceDetailsPage : Page
             throw new InvalidOperationException("Device details require a known device.");
         }
         ViewModel.Initialize(device);
+        cameraDevice = device;
         await ViewModel.LoadAsync();
     }
 
@@ -38,6 +40,25 @@ public sealed partial class DeviceDetailsPage : Page
         {
             Frame.GoBack();
         }
+    }
+
+    private async void OnCameraClicked(object sender, RoutedEventArgs args)
+    {
+#if MATTER_CAMERA_DEVELOPMENT
+        if (cameraDevice is not null && App.ControllerSession.Controller is { } controller &&
+            Environment.GetCommandLineArgs().Contains("--camera", StringComparer.Ordinal))
+        {
+            new Camera.CameraReceiverWindow(controller, cameraDevice.NodeId).Activate();
+            return;
+        }
+#endif
+        await new ContentDialog
+        {
+            XamlRoot = XamlRoot,
+            Title = "Camera development preview",
+            Content = "Use a camera-enabled development build (MatterCameraDevelopmentRoot or MatterCameraDevelopment=true) and launch with --camera.",
+            CloseButtonText = "OK"
+        }.ShowAsync();
     }
 
     private async void OnEndpointToggleClicked(object sender, RoutedEventArgs args)

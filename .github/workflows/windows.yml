@@ -6,6 +6,13 @@ on:
       - main
   pull_request:
   workflow_dispatch:
+    inputs:
+      baselinePackageUrl:
+        description: URL of the actual published preview.14 package for strict combined release acceptance
+        type: string
+      baselinePackageSha256:
+        description: Expected SHA256 of the actual preview.14 package
+        type: string
 
 concurrency:
   group: ${{ github.ref }}-${{ github.workflow }}
@@ -13,6 +20,9 @@ concurrency:
 
 permissions:
   contents: read
+
+env:
+  PACKAGE_VERSION: 0.2.0-preview.1
 
 jobs:
   build:
@@ -31,7 +41,65 @@ jobs:
 
       - name: Build package
         shell: pwsh
-        run: .\tools\build.ps1 -Architecture all
+        run: .\tools\build.ps1 -Architecture all -BuildCameraSignaling -Version $env:PACKAGE_VERSION
+
+      - name: Test combined NuGet consumers
+        shell: pwsh
+        run: |
+          .\tools\test-package-consumers.ps1 -PackageVersion $env:PACKAGE_VERSION `
+            -OutputDirectory .\out\combined-consumer-x64 -NativeAot -Run
+          .\tools\test-package-consumers.ps1 -PackageVersion $env:PACKAGE_VERSION `
+            -OutputDirectory .\out\combined-consumer-arm64 -Architecture arm64 -NativeAot
+
+      - name: Test native camera and commissioning regressions
+        shell: pwsh
+        run: .\tools\test-camera-discovery.ps1 -Architecture x64
+
+      - name: Test receiver and ABI comparison regressions
+        shell: pwsh
+        run: |
+          node --test .\tools\test-camera-receiver.cjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          .\tools\test-abi-comparison.ps1
+
+      - name: Validate clean pinned build provenance
+        shell: pwsh
+        run: |
+          foreach ($architecture in @('x64', 'arm64')) {
+            $information = Get-Content ".\out\win-winrt-$architecture\build-info.json" -Raw | ConvertFrom-Json
+            if ($information.sdkCommit -ne $env:GITHUB_SHA -or
+                $information.nativeCommit -ne $information.nativePin -or
+                $information.sourceDirty -or $information.nativeSourceDirty -or
+                $information.developmentOverride) {
+              throw "The $architecture package must come from clean sources at the declared SDK/native revisions."
+            }
+          }
+
+      - name: Strict preview.14 release acceptance
+        if: github.event_name == 'workflow_dispatch' && inputs.baselinePackageUrl != ''
+        shell: pwsh
+        env:
+          BASELINE_PACKAGE_URL: ${{ inputs.baselinePackageUrl }}
+          BASELINE_PACKAGE_SHA256: ${{ inputs.baselinePackageSha256 }}
+        run: |
+          if ($env:BASELINE_PACKAGE_SHA256 -notmatch '^[0-9A-Fa-f]{64}$') {
+            throw 'Strict acceptance requires the published package SHA256.'
+          }
+          $baseline = Join-Path $env:RUNNER_TEMP 'preview.14.nupkg'
+          Invoke-WebRequest -Uri $env:BASELINE_PACKAGE_URL -OutFile $baseline
+          if ((Get-FileHash $baseline).Hash -ne $env:BASELINE_PACKAGE_SHA256) {
+            throw 'Published preview.14 package hash mismatch.'
+          }
+          .\tools\test-combined-compatibility.ps1 -BaselinePackage $baseline `
+            -CombinedPackage ".\artifacts\Matter.Windows.Controller.$env:PACKAGE_VERSION.nupkg" `
+            -OutputDirectory .\out\preview14-acceptance -MatterSdkRoot .\matterforwindows -Run
+
+      - name: Record unavailable release acceptance baseline
+        if: github.event_name != 'workflow_dispatch' || inputs.baselinePackageUrl == ''
+        shell: pwsh
+        run: |
+          'Preview.14 API/ABI release acceptance is BLOCKED: no actual published baseline supplied. Older-baseline checks are provisional.' |
+            Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
 
       - name: Build sample consumers
         shell: pwsh
@@ -87,7 +155,9 @@ jobs:
       - name: Upload package
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.0
         with:
-          name: Matter.Windows.Controller
-          path: artifacts/Matter.Windows.Controller.*.nupkg
+          name: Matter.Windows.Controller.${{ env.PACKAGE_VERSION }}
+          path: |
+            artifacts/Matter.Windows.Controller.${{ env.PACKAGE_VERSION }}.nupkg
+            artifacts/Matter.Windows.Controller.${{ env.PACKAGE_VERSION }}.nupkg.sha256
           if-no-files-found: error
           retention-days: 14

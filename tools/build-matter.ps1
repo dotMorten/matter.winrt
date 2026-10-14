@@ -1,12 +1,18 @@
 [CmdletBinding()]
 param(
     [ValidateSet("x64", "arm64")]
-    [string] $Architecture = "x64"
+    [string] $Architecture = "x64",
+    [string] $MatterSdkRoot,
+    [switch] $BuildCameraSignaling
 )
 
 $ErrorActionPreference = "Stop"
 $matterWinRtRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
-$matterSdkRoot = Join-Path $matterWinRtRoot "matterforwindows"
+$matterSdkRoot = if ([string]::IsNullOrWhiteSpace($MatterSdkRoot)) {
+    Join-Path $matterWinRtRoot "matterforwindows"
+} else {
+    (Resolve-Path $MatterSdkRoot).Path
+}
 $setupScript = Join-Path $matterSdkRoot "scripts\setup\windows.ps1"
 $gn = Join-Path $matterSdkRoot ".environment\windows\gn\gn.exe"
 $ninja = Join-Path $matterSdkRoot ".environment\windows\ninja\ninja.exe"
@@ -48,6 +54,7 @@ static_library("matter-controller-sdk") {
   ]
   deps = [
     "//src/app/data-model-provider",
+    "//src/app/persistence:default",
     "//src/controller",
     "//src/credentials:default_attestation_verifier",
     "//src/platform",
@@ -71,6 +78,7 @@ $gnArgs = @(
     'chip_build_tools=false'
     'chip_caller_handles_critical_failure=true'
     'is_debug=false'
+    "chip_build_webrtc_signaling=$($BuildCameraSignaling.IsPresent.ToString().ToLowerInvariant())"
 ) -join " "
 
 & $gn gen $outputDirectory "--root=$matterSdkRoot" "--dotfile=$dotfile" "--args=$gnArgs"
