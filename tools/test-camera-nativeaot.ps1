@@ -34,7 +34,8 @@ $publishName = if ([string]::IsNullOrWhiteSpace($PackageVersion)) { "camera-nati
 $publish = Join-Path $winrtRoot "out\$publishName"
 New-Item -ItemType Directory -Force (Join-Path $winrtRoot "artifacts") | Out-Null
 & dotnet publish (Join-Path $winrtRoot "tests\CameraNativeAot\CameraNativeAot.csproj") `
-    -c Release -o $publish "-p:MatterControllerPackageVersion=$PackageVersion" -p:PlatformTarget=x64 --verbosity quiet
+    -c Release -o $publish "-p:MatterControllerPackageVersion=$PackageVersion" -p:PlatformTarget=x64 `
+    "-p:BaseIntermediateOutputPath=$publish\obj\" --verbosity quiet
 if ($LASTEXITCODE -ne 0) {
     throw "NativeAOT client publish failed."
 }

@@ -2,7 +2,7 @@
 param(
     [ValidateSet("x64", "arm64", "all")]
     [string] $Architecture = "all",
-    [string] $Version = "0.2.0-camera-commissioning.1",
+    [string] $Version = "0.2.0-camera-commissioning.2",
     [string] $OutputDirectory = "artifacts",
     [switch] $SkipBuild,
     [string] $MatterSdkRoot,
@@ -43,18 +43,18 @@ foreach ($targetArchitecture in $architectures) {
         if (-not (Test-Path (Join-Path $outputPath $asset))) {
             throw "Missing $targetArchitecture output: $asset"
         }
-        $informationPath = Join-Path $outputPath "build-info.json"
-        if (-not (Test-Path $informationPath)) {
-            throw "Missing matched build provenance for $targetArchitecture. Rebuild the component."
-        }
-        $information = Get-Content $informationPath -Raw | ConvertFrom-Json
-        if ($information.architecture -ne $targetArchitecture -or
-            $information.dllSha256 -ne (Get-FileHash (Join-Path $outputPath "Matter.Windows.Controller.dll")).Hash -or
-            $information.winmdSha256 -ne (Get-FileHash (Join-Path $outputPath "Matter.Windows.Controller.winmd")).Hash) {
-            throw "The $targetArchitecture metadata/DLL does not match its build provenance."
-        }
-        $buildInformation += $information
     }
+    $informationPath = Join-Path $outputPath "build-info.json"
+    if (-not (Test-Path $informationPath)) {
+        throw "Missing matched build provenance for $targetArchitecture. Rebuild the component."
+    }
+    $information = Get-Content $informationPath -Raw | ConvertFrom-Json
+    if ($information.architecture -ne $targetArchitecture -or
+        $information.dllSha256 -ne (Get-FileHash (Join-Path $outputPath "Matter.Windows.Controller.dll")).Hash -or
+        $information.winmdSha256 -ne (Get-FileHash (Join-Path $outputPath "Matter.Windows.Controller.winmd")).Hash) {
+        throw "The $targetArchitecture metadata/DLL does not match its build provenance."
+    }
+    $buildInformation += $information
 }
 
 if (@($architectures).Count -ne 2) {
@@ -62,10 +62,20 @@ if (@($architectures).Count -ne 2) {
     return
 }
 
-if ($buildInformation[0].sdkCommit -ne $buildInformation[1].sdkCommit -or
-    $buildInformation[0].nativeCommit -ne $buildInformation[1].nativeCommit -or
-    $buildInformation[0].winmdSha256 -ne $buildInformation[1].winmdSha256) {
-    throw "Architecture outputs must use the same SDK/native commits and WinMD."
+if ($buildInformation.Count -ne 2 -or
+    $buildInformation[0].sdkCommit -ne $buildInformation[1].sdkCommit -or
+    $buildInformation[0].nativeCommit -ne $buildInformation[1].nativeCommit) {
+    throw "Architecture outputs must use the same SDK/native commits."
+}
+Write-Host "Validating architecture metadata equivalence (not published-baseline acceptance)."
+& {
+    . (Join-Path $sdkRoot "scripts\setup\windows.ps1") -Architecture x64
+    & (Join-Path $PSScriptRoot "verify-abi.ps1") `
+        -BaselineWinmd (Join-Path $outerRoot "out\win-winrt-x64\Matter.Windows.Controller.winmd") `
+        -CurrentWinmd (Join-Path $outerRoot "out\win-winrt-arm64\Matter.Windows.Controller.winmd") `
+        -EquivalentWinmd (Join-Path $outerRoot "out\win-winrt-x64\Matter.Windows.Controller.winmd") `
+        -NativeDll @((Join-Path $outerRoot "out\win-winrt-x64\Matter.Windows.Controller.dll"),
+                    (Join-Path $outerRoot "out\win-winrt-arm64\Matter.Windows.Controller.dll"))
 }
 New-Item -ItemType Directory -Force $artifactPath | Out-Null
 New-Item -ItemType Directory -Force `
@@ -77,6 +87,10 @@ New-Item -ItemType Directory -Force `
 Copy-Item (Join-Path $outerRoot "out\win-winrt-x64\Matter.Windows.Controller.dll") `
     (Join-Path $stagingPath "runtimes\win-x64\native")
 Copy-Item (Join-Path $outerRoot "out\win-winrt-arm64\Matter.Windows.Controller.dll") `
+    (Join-Path $stagingPath "runtimes\win-arm64\native")
+Copy-Item (Join-Path $outerRoot "out\win-winrt-x64\Matter.Windows.Controller.winmd") `
+    (Join-Path $stagingPath "runtimes\win-x64\native")
+Copy-Item (Join-Path $outerRoot "out\win-winrt-arm64\Matter.Windows.Controller.winmd") `
     (Join-Path $stagingPath "runtimes\win-arm64\native")
 Copy-Item (Join-Path $outerRoot "out\win-winrt-x64\Matter.Windows.Controller.winmd") `
     (Join-Path $stagingPath "winmd")

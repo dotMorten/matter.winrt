@@ -21,23 +21,25 @@ git submodule update --init --recursive
 .\tools\build.ps1 -Architecture all -BuildCameraSignaling
 ```
 
-Package `0.2.0-camera-commissioning.1` includes matched x64/ARM64 DLLs, WinMD,
+Package `0.2.0-camera-commissioning.2` includes matched x64/ARM64 DLLs, WinMD,
 projection/build assets, activation metadata, and build provenance. Versions
 cannot be overwritten. `build-info.json` records SDK/native commits, native pin,
 dirty-source and override indicators, toolchain and DLL/WinMD/library hashes.
 The adjacent `.nupkg.sha256` records the package hash. Any dirty-source or
 different-revision build is development evidence, not a release build.
+Version `.1` is superseded: its provenance repeated architecture entries.
+It is retained unchanged and must not be used as the acceptance artifact.
 
 ## Acceptance commands
 
 ```powershell
-.\tools\test-package-consumers.ps1 -PackageVersion 0.2.0-camera-commissioning.1 `
-    -OutputDirectory .\out\combined-consumer-x64 -NativeAot -Run
-.\tools\test-package-consumers.ps1 -PackageVersion 0.2.0-camera-commissioning.1 `
-    -OutputDirectory .\out\combined-consumer-arm64 -Architecture arm64 -NativeAot
+.\tools\test-package-consumers.ps1 -PackageVersion 0.2.0-camera-commissioning.2 `
+    -OutputDirectory .\out\combined-consumer-x64 -MatterSdkRoot .\matterforwindows -NativeAot -Run
+.\tools\test-package-consumers.ps1 -PackageVersion 0.2.0-camera-commissioning.2 `
+    -OutputDirectory .\out\combined-consumer-arm64 -MatterSdkRoot .\matterforwindows -Architecture arm64 -NativeAot
 .\tools\test-combined-compatibility.ps1 `
     -BaselinePackage <actual-published-preview.14.nupkg> `
-    -CombinedPackage .\artifacts\Matter.Windows.Controller.0.2.0-camera-commissioning.1.nupkg `
+    -CombinedPackage .\artifacts\Matter.Windows.Controller.0.2.0-camera-commissioning.2.nupkg `
     -OutputDirectory .\out\preview14-acceptance -MatterSdkRoot .\matterforwindows -Run
 ```
 

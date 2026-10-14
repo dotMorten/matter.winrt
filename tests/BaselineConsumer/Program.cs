@@ -32,6 +32,8 @@ internal static class BaselineAcceptance
             Require(selection.Mode == mode && selection.InterfaceId == id, "Selection constructor contract changed");
         }
         var interfaces = await MatterNetworkInterfaceProvider.GetEligibleNetworkInterfacesAsync();
+        var dataset = new Windows.Storage.Streams.Buffer(16) { Length = 16 };
+        Require(new ThreadNetworkCredentials(dataset).DatasetLength == 16, "Thread credential activation changed");
         foreach (var item in interfaces)
         {
             Require(item.Id != 0 && item.Name is not null, "Interface enumeration lost identifier/name");

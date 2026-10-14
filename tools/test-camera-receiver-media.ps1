@@ -7,7 +7,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
-$output = [System.IO.Path]::GetFullPath($OutputDirectory)
+$output = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($OutputDirectory)
 if (Test-Path (Join-Path $output "result.json")) {
     throw "Use a fresh output directory so a previous result cannot satisfy this run."
 }
@@ -16,6 +16,7 @@ $binaryDirectory = Join-Path $output "bin"
 & dotnet build (Join-Path $root "samples\ControllerApp\MatterControllerApp.csproj") `
     -p:Platform=x64 -p:Unpackaged=true -p:MatterCameraMediaTest=true `
     "-p:MatterControllerPackageVersion=$PackageVersion" "-p:OutputPath=$binaryDirectory\" `
+    "-p:BaseIntermediateOutputPath=$output\obj\" `
     --nologo --verbosity quiet
 if ($LASTEXITCODE -ne 0) {
     throw "Synthetic WebView2 test build failed."

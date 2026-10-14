@@ -6,6 +6,26 @@ namespace MatterControllerApp;
 
 internal static class ApiSurfaceCompileChecks
 {
+    internal static async Task ExerciseLegacyCommissioningAsync(MatterController controller)
+    {
+        controller.CommissioningProgress += (sender, progress) => _ = (sender, progress.Stage, progress.Message);
+        _ = controller.CommissionedNodes;
+        await controller.CommissionOnNetworkAsync(new OnNetworkCommissioningParameters
+        {
+            NodeId = 1, SetupPinCode = 20202021, LongDiscriminator = 3840
+        });
+        await controller.CommissionBleAsync(new BleCommissioningParameters
+        {
+            NodeId = 2, SetupPinCode = 20202021, LongDiscriminator = 3840
+        });
+        await new MatterControllerNetworkCommissioning(controller).CommissionBleAsync(
+            new BleNetworkCommissioningParameters
+            {
+                NodeId = 3, SetupPinCode = 20202021, LongDiscriminator = 3840,
+                WiFi = new WiFiNetworkCredentials("network", "passphrase")
+            });
+    }
+
     internal static async Task ExerciseGenericInteractionsAsync(MatterController controller, ulong nodeId)
     {
         var value = new PropertySet { ["value"] = true };

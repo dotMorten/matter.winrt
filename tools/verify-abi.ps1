@@ -152,11 +152,11 @@ function Compare-WinmdDeclarations {
             $baselineBlock = @($baselineBlock | ForEach-Object { $_.TrimEnd(",") })
             $currentBlock = @($currentBlock | ForEach-Object { $_.TrimEnd(",") })
         }
-        if ($key.StartsWith("interface ")) {
+        if ($key.StartsWith("interface ") -or $key.StartsWith("struct ")) {
             $baselineSignature = @($baselineBlock | Where-Object { -not $_.StartsWith("[deprecated(") })
             $currentSignature = @($currentBlock | Where-Object { -not $_.StartsWith("[deprecated(") })
             if (($baselineSignature -join "`n") -ne ($currentSignature -join "`n")) {
-                $errors.Add("Changed existing WinRT interface: $key")
+                $errors.Add("Changed existing WinRT binary declaration: $key")
             }
             foreach ($deprecation in $baselineBlock | Where-Object { $_.StartsWith("[deprecated(") }) {
                 if ($deprecation -notin $currentBlock) {

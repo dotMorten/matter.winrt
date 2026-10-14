@@ -46,4 +46,9 @@ $current[$interfaceKey] = @("[uuid(replaced)]", "interface IController", "{", "H
 if (@(Compare-WinmdDeclarations $baseline $current).Count -eq 0) {
     throw "A changed interface identity was accepted."
 }
-Write-Host "PASS additive enum formatting, removed/changed enum values, interface identity and vtable preservation."
+$structBaseline = @{ "struct Test.Value" = @("struct Value", "{", "UINT32 id;", "};") }
+$structChanged = @{ "struct Test.Value" = @("struct Value", "{", "UINT32 id;", "UINT64 extra;", "};") }
+if (@(Compare-WinmdDeclarations $structBaseline $structChanged).Count -eq 0) {
+    throw "An existing struct layout change was accepted."
+}
+Write-Host "PASS additive enums, removed/changed enum values, interface identity/vtables and struct layout preservation."

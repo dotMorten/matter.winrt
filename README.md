@@ -93,7 +93,7 @@ version used at build time.
 
 The `windows-camera-commissioning-compatible` branch combines the camera topic
 through `455b62d` with structured commissioning and per-operation interface
-selection. Its development package is `0.2.0-camera-commissioning.1`. See
+selection. Its development package is `0.2.0-camera-commissioning.2`. See
 [combined SDK acceptance and migration](docs/combined-sdk-acceptance.md) for the
 declared native dependency, package-consumer fixtures, and outstanding release
 gates. The actual published `0.1.0-preview.14` WinMD is required for acceptance;

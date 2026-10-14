@@ -7,7 +7,7 @@ param(
     [switch] $Run
 )
 $ErrorActionPreference = "Stop"
-$output = [System.IO.Path]::GetFullPath($OutputDirectory)
+$output = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($OutputDirectory)
 if (Test-Path $output) { throw "Use a fresh acceptance directory." }
 New-Item -ItemType Directory $output | Out-Null
 $packages = @{}
@@ -24,6 +24,7 @@ foreach ($entry in @(@("baseline", $BaselinePackage), @("combined", $CombinedPac
         directory = $destination
         version = [string]$metadata.package.metadata.version
         sha256 = (Get-FileHash $package).Hash
+        source = Split-Path $package -Parent
     }
 }
 if ($packages.baseline.version -ne "0.1.0-preview.14") {
@@ -39,6 +40,8 @@ $combined = $packages.combined.directory
                 (Join-Path $combined "runtimes\win-arm64\native\Matter.Windows.Controller.dll")) `
     -ReportDirectory (Join-Path $output "abi")
 & (Join-Path $PSScriptRoot "test-package-consumers.ps1") -PackageVersion $packages.combined.version `
-    -OutputDirectory (Join-Path $output "x64") -NativeAot -Run:$Run
+    -OutputDirectory (Join-Path $output "x64") -MatterSdkRoot $MatterSdkRoot `
+    -PackageSource $packages.combined.source -NativeAot -Run:$Run
 & (Join-Path $PSScriptRoot "test-package-consumers.ps1") -PackageVersion $packages.combined.version `
-    -OutputDirectory (Join-Path $output "arm64") -Architecture arm64 -NativeAot
+    -OutputDirectory (Join-Path $output "arm64") -MatterSdkRoot $MatterSdkRoot `
+    -PackageSource $packages.combined.source -Architecture arm64 -NativeAot
