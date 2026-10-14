@@ -15,6 +15,9 @@ The declared native submodule dependency is
 checkout at that exact declared revision with `-MatterSdkRoot`; this is not a
 different-revision development override. Fresh checkouts must initialize the
 submodule and follow its Windows environment setup before building.
+The package builder runs each native/component build in a separate PowerShell
+process so repeated x64/ARM64 MSVC setup cannot accumulate tool paths past
+`cmd.exe`'s command-line limit.
 
 ```powershell
 git submodule update --init --recursive

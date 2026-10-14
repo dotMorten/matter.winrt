@@ -10,6 +10,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+$powerShell = Join-Path $PSHOME "pwsh.exe"
 $outerRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $artifactPath = Join-Path $outerRoot $OutputDirectory
 $stagingPath = Join-Path $artifactPath "Matter.Windows.Controller.$Version"
@@ -32,10 +33,16 @@ foreach ($targetArchitecture in $architectures) {
     $outputName = "win-winrt-$targetArchitecture"
     $outputPath = Join-Path $outerRoot "out\$outputName"
     if (-not $SkipBuild) {
-        & (Join-Path $PSScriptRoot "build-matter.ps1") -Architecture $targetArchitecture `
-            -MatterSdkRoot $sdkRoot -BuildCameraSignaling:$BuildCameraSignaling
+        # Keep repeated MSVC setup from accumulating tool paths beyond cmd.exe's command-line limit.
+        $matterArguments = @(
+            "-NoProfile", "-File", (Join-Path $PSScriptRoot "build-matter.ps1"),
+            "-Architecture", $targetArchitecture, "-MatterSdkRoot", $sdkRoot
+        )
+        if ($BuildCameraSignaling) { $matterArguments += "-BuildCameraSignaling" }
+        & $powerShell @matterArguments
         if ($LASTEXITCODE -ne 0) { throw "Matter SDK build failed for $targetArchitecture." }
-        & (Join-Path $PSScriptRoot "build-winrt.ps1") -Architecture $targetArchitecture -MatterSdkRoot $sdkRoot
+        & $powerShell -NoProfile -File (Join-Path $PSScriptRoot "build-winrt.ps1") `
+            -Architecture $targetArchitecture -MatterSdkRoot $sdkRoot
         if ($LASTEXITCODE -ne 0) { throw "WinRT component build failed for $targetArchitecture." }
     }
 
