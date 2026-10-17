@@ -2,10 +2,23 @@
 param(
     [ValidateSet("x64", "arm64")]
     [string] $Architecture = "x64",
-    [string] $MatterSdkRoot
+    [string] $MatterSdkRoot,
+    [switch] $BuildOnly
 )
 
 $ErrorActionPreference = "Stop"
+function Invoke-NativeRegression {
+    param([string] $Executable)
+    $process = Start-Process -FilePath $Executable -NoNewWindow -PassThru
+    if (-not $process.WaitForExit(120000)) {
+        Stop-Process -Id $process.Id
+        throw "Native regression exceeded its two-minute deadline: $Executable"
+    }
+    if ($process.ExitCode -ne 0) {
+        throw "Native regression failed with exit code $($process.ExitCode): $Executable"
+    }
+}
+
 $winrtRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $sdkRoot = if ([string]::IsNullOrWhiteSpace($MatterSdkRoot)) {
     Join-Path $winrtRoot "matterforwindows"
@@ -32,14 +45,13 @@ $machine = if ($Architecture -eq "arm64") { "ARM64" } else { "X64" }
 if ($LASTEXITCODE -ne 0) {
     throw "Camera discovery projection test link failed."
 }
-& $executable
-if ($LASTEXITCODE -ne 0) {
-    throw "Camera discovery projection tests failed."
+if (-not $BuildOnly) {
+    Invoke-NativeRegression $executable
 }
 
 $tlvObject = Join-Path $output "ProjectionTlvTests.obj"
 $tlvExecutable = Join-Path $output "ProjectionTlvTests.exe"
-& cl.exe "@$options" /c (Join-Path $winrtRoot "winrt\ProjectionTlvTests.cpp") "/Fo$tlvObject"
+& cl.exe "@$options" /DMATTER_WINRT_ADMISSION_TESTS /c (Join-Path $winrtRoot "winrt\ProjectionTlvTests.cpp") "/Fo$tlvObject"
 if ($LASTEXITCODE -ne 0) {
     throw "Private TLV bridge test compilation failed."
 }
@@ -50,7 +62,21 @@ $tlvObjects = @($objects | Where-Object { [System.IO.Path]::GetFileName($_) -ne 
 if ($LASTEXITCODE -ne 0) {
     throw "Private TLV bridge test link failed."
 }
-& $tlvExecutable
+if (-not $BuildOnly) {
+    Invoke-NativeRegression $tlvExecutable
+}
+
+$cancellationObject = Join-Path $output "ReadCancellationTests.obj"
+$cancellationExecutable = Join-Path $output "ReadCancellationTests.exe"
+& cl.exe "@$options" /c (Join-Path $winrtRoot "winrt\ReadCancellationTests.cpp") "/Fo$cancellationObject"
 if ($LASTEXITCODE -ne 0) {
-    throw "Private TLV bridge tests failed."
+    throw "Public read cancellation test compilation failed."
+}
+& link.exe /nologo "/MACHINE:$machine" "/OUT:$cancellationExecutable" $cancellationObject @objects $library `
+    WindowsApp.lib ws2_32.lib iphlpapi.lib Advapi32.lib Ole32.lib Shell32.lib dnsapi.lib
+if ($LASTEXITCODE -ne 0) {
+    throw "Public read cancellation test link failed."
+}
+if (-not $BuildOnly) {
+    Invoke-NativeRegression $cancellationExecutable
 }

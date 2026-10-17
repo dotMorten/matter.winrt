@@ -82,10 +82,10 @@ direct development outputs:
 ```powershell
 dotnet build .\samples\ControllerApp\MatterControllerApp.csproj `
     -p:Platform=x64 -p:Unpackaged=true `
-    -p:MatterControllerPackageVersion=0.2.0-preview.1 -p:MatterCameraDevelopment=true
+    -p:MatterControllerPackageVersion=0.2.0-preview.2 -p:MatterCameraDevelopment=true
 ```
 
-The package version property defaults to `0.2.0-preview.1`, which must first
+The package version property defaults to `0.2.0-preview.2`, which must first
 be built locally or downloaded from the Windows CI artifact into the local
 `artifacts` feed; it is not automatically published to nuget.org. Camera UI
 remains opt-in. For an MSIX build omit `-p:Unpackaged=true`.
@@ -241,7 +241,7 @@ run the isolated synthetic loopback:
 ```powershell
 .\tools\test-camera-receiver-media.ps1 `
     -OutputDirectory C:\temp\matter-camera-media-test-1 `
-    -PackageVersion 0.2.0-preview.1
+    -PackageVersion 0.2.0-preview.2
 ```
 
 Use a fresh output directory for each run. The special test build starts neither

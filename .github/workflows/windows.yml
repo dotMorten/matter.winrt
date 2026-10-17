@@ -22,7 +22,7 @@ permissions:
   contents: read
 
 env:
-  PACKAGE_VERSION: 0.2.0-preview.1
+  PACKAGE_VERSION: 0.2.0-preview.2
 
 jobs:
   build:
@@ -54,6 +54,10 @@ jobs:
       - name: Test native camera and commissioning regressions
         shell: pwsh
         run: .\tools\test-camera-discovery.ps1 -Architecture x64
+
+      - name: Build ARM64 native reliability regressions
+        shell: pwsh
+        run: .\tools\test-camera-discovery.ps1 -Architecture arm64 -BuildOnly
 
       - name: Test receiver and ABI comparison regressions
         shell: pwsh

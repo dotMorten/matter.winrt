@@ -48,7 +48,9 @@
 #include <limits>
 #include <mutex>
 #include <optional>
+#include <shared_mutex>
 #include <string>
+#include <unordered_map>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -71,11 +73,15 @@ constexpr size_t kMaximumPendingReports = 256;
 
 std::unique_lock<std::timed_mutex> AcquireOperationLock(
     std::timed_mutex & mutex, std::shared_ptr<std::atomic_bool> const & cancellation,
-    std::chrono::steady_clock::time_point deadline)
+    std::chrono::steady_clock::time_point deadline, std::atomic_bool const * closing = nullptr)
 {
     std::unique_lock lock(mutex, std::defer_lock);
     for (;;)
     {
+        if (closing && closing->load(std::memory_order_acquire))
+        {
+            throw hresult_illegal_method_call(L"The Matter controller is closing.");
+        }
         if (cancellation && cancellation->load(std::memory_order_acquire))
         {
             throw hresult_canceled();
@@ -83,7 +89,7 @@ std::unique_lock<std::timed_mutex> AcquireOperationLock(
         const auto now = std::chrono::steady_clock::now();
         if (now >= deadline)
         {
-            throw hresult_error(HRESULT_FROM_WIN32(ERROR_TIMEOUT), L"Matter attribute read timed out.");
+            throw hresult_error(HRESULT_FROM_WIN32(ERROR_TIMEOUT), L"Matter operation admission timed out.");
         }
         if (lock.owns_lock())
         {
@@ -92,6 +98,135 @@ std::unique_lock<std::timed_mutex> AcquireOperationLock(
         (void) lock.try_lock_until(std::min(deadline, now + std::chrono::milliseconds(100)));
     }
 }
+
+class RuntimeOperationAdmission
+{
+public:
+    struct NodeLease
+    {
+        // Destruction releases the node lock before its mutex and the runtime lifetime lease.
+        std::shared_lock<std::shared_timed_mutex> lifetime;
+        std::shared_ptr<std::timed_mutex> nodeMutex;
+        std::unique_lock<std::timed_mutex> nodeLock;
+    };
+
+    std::shared_lock<std::shared_timed_mutex> AcquireLifetime(
+        std::shared_ptr<std::atomic_bool> const & cancellation = {},
+        std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + kInteractionTimeout)
+    {
+        std::shared_lock lease(mLifetimeMutex, std::defer_lock);
+        WaitForLifetime(lease, cancellation, deadline);
+        return lease;
+    }
+
+    NodeLease AcquireNode(uint64_t node, std::shared_ptr<std::atomic_bool> const & cancellation = {},
+                         std::chrono::steady_clock::time_point deadline =
+                             std::chrono::steady_clock::now() + kInteractionTimeout)
+    {
+        auto lifetime = AcquireLifetime(cancellation, deadline);
+        return AcquireNodeWithLifetime(std::move(lifetime), node, cancellation, deadline);
+    }
+
+    NodeLease AcquireNodeWithLifetime(std::shared_lock<std::shared_timed_mutex> lifetime, uint64_t node,
+                                     std::shared_ptr<std::atomic_bool> const & cancellation,
+                                     std::chrono::steady_clock::time_point deadline)
+    {
+        std::shared_ptr<std::timed_mutex> nodeMutex;
+        {
+            std::scoped_lock lock(mIndexMutex);
+            for (auto entry = mNodeMutexes.begin(); entry != mNodeMutexes.end();)
+            {
+                if (entry->second.expired())
+                {
+                    entry = mNodeMutexes.erase(entry);
+                }
+                else
+                {
+                    ++entry;
+                }
+            }
+            auto & weak = mNodeMutexes[node];
+            nodeMutex = weak.lock();
+            if (!nodeMutex)
+            {
+                nodeMutex = std::make_shared<std::timed_mutex>();
+                weak = nodeMutex;
+            }
+        }
+        auto nodeLock = AcquireOperationLock(*nodeMutex, cancellation, deadline, &mClosing);
+        return { std::move(lifetime), std::move(nodeMutex), std::move(nodeLock) };
+    }
+
+    std::unique_lock<std::shared_timed_mutex> AcquireExclusive(
+        std::shared_ptr<std::atomic_bool> const & cancellation = {},
+        std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + kCommissioningTimeout)
+    {
+        std::unique_lock lease(mLifetimeMutex, std::defer_lock);
+        WaitForLifetime(lease, cancellation, deadline);
+        return lease;
+    }
+
+    std::unique_lock<std::shared_timed_mutex> BeginShutdown()
+    {
+        mClosing.store(true, std::memory_order_release);
+        return std::unique_lock(mLifetimeMutex);
+    }
+
+    std::unique_lock<std::timed_mutex> AcquireGate(
+        std::timed_mutex & mutex, std::shared_ptr<std::atomic_bool> const & cancellation,
+        std::chrono::steady_clock::time_point deadline)
+    {
+        return AcquireOperationLock(mutex, cancellation, deadline, &mClosing);
+    }
+
+    std::shared_lock<std::shared_timed_mutex> AcquireCleanup()
+    {
+        std::shared_lock lease(mLifetimeMutex, std::defer_lock);
+        if (!mClosing.load(std::memory_order_acquire))
+        {
+            lease.lock();
+            if (!mClosing.load(std::memory_order_acquire))
+            {
+                return lease;
+            }
+            lease.unlock();
+        }
+        return lease;
+    }
+
+private:
+    template <typename Lock>
+    void WaitForLifetime(Lock & lease, std::shared_ptr<std::atomic_bool> const & cancellation,
+                         std::chrono::steady_clock::time_point deadline)
+    {
+        for (;;)
+        {
+            if (mClosing.load(std::memory_order_acquire))
+            {
+                throw hresult_illegal_method_call(L"The Matter controller is closing.");
+            }
+            if (cancellation && cancellation->load(std::memory_order_acquire))
+            {
+                throw hresult_canceled();
+            }
+            const auto now = std::chrono::steady_clock::now();
+            if (now >= deadline)
+            {
+                throw hresult_error(HRESULT_FROM_WIN32(ERROR_TIMEOUT), L"Matter operation admission timed out.");
+            }
+            if (lease.owns_lock())
+            {
+                return;
+            }
+            (void) lease.try_lock_until(std::min(deadline, now + std::chrono::milliseconds(100)));
+        }
+    }
+
+    std::shared_timed_mutex mLifetimeMutex;
+    std::atomic_bool mClosing{ false };
+    std::mutex mIndexMutex;
+    std::unordered_map<uint64_t, std::weak_ptr<std::timed_mutex>> mNodeMutexes;
+};
 
 struct NativeCommissioningProgress
 {
@@ -977,6 +1112,13 @@ public:
 
     void Close()
     {
+        {
+            std::scoped_lock lock(mutex);
+            if (closed)
+            {
+                return;
+            }
+        }
         PlatformMgr().LockChipStack();
         onConnected.Cancel();
         onConnectionFailure.Cancel();
@@ -1121,6 +1263,13 @@ public:
 
     void Close()
     {
+        {
+            std::scoped_lock lock(mutex);
+            if (closed)
+            {
+                return;
+            }
+        }
         PlatformMgr().LockChipStack();
         onConnected.Cancel();
         onConnectionFailure.Cancel();
@@ -1448,6 +1597,9 @@ std::string GenerateSetupCode(uint32_t pinCode, uint16_t discriminator)
 
 class ControllerRuntime : public std::enable_shared_from_this<ControllerRuntime>
 {
+#if defined(MATTER_WINRT_ADMISSION_TESTS)
+    friend struct RuntimeAdmissionTests;
+#endif
 public:
     static std::shared_ptr<ControllerRuntime> Create(Controller::ControllerOptions const & options)
     {
@@ -1474,6 +1626,7 @@ public:
 
     void Close()
     {
+        auto lifetime = mAdmission.BeginShutdown();
         std::scoped_lock operationLock(mOperationMutex);
         std::scoped_lock lock(mMutex);
         if (mClosed)
@@ -1530,6 +1683,7 @@ public:
 
     uint16_t FabricIndex()
     {
+        auto lifetime = mAdmission.AcquireLifetime();
         std::scoped_lock operationLock(mOperationMutex);
         EnsureOpen();
         return mCommissioner.GetFabricIndex();
@@ -1543,6 +1697,7 @@ public:
                                             CommissioningProgressCallback progressCallback = {},
                                             std::shared_ptr<std::atomic_bool> cancellationRequested = {})
     {
+        auto lifetime = mAdmission.AcquireExclusive(cancellationRequested);
         std::scoped_lock operationLock(mOperationMutex);
         EnsureOpen();
         if (cancellationRequested && cancellationRequested->load(std::memory_order_acquire))
@@ -1628,6 +1783,7 @@ public:
 
     std::vector<uint64_t> CommissionedNodes()
     {
+        auto lifetime = mAdmission.AcquireLifetime();
         std::scoped_lock lock(mOperationMutex);
         EnsureOpen();
         return mCommissionedNodes;
@@ -1643,6 +1799,7 @@ public:
         (void) ReadAttribute(nodeId, 0, app::Clusters::BasicInformation::Id,
                              app::Clusters::BasicInformation::Attributes::VendorID::Id);
 
+        auto lifetime = mAdmission.AcquireExclusive();
         std::scoped_lock lock(mOperationMutex);
         EnsureOpen();
         if (std::find(mCommissionedNodes.begin(), mCommissionedNodes.end(), nodeId) == mCommissionedNodes.end())
@@ -1655,6 +1812,7 @@ public:
 
     void RemoveNode(uint64_t nodeId)
     {
+        auto lifetime = mAdmission.AcquireExclusive();
         std::scoped_lock lock(mOperationMutex);
         EnsureOpen();
         PlatformMgr().LockChipStack();
@@ -1698,7 +1856,7 @@ public:
     template <typename Request>
     void Invoke(uint64_t nodeId, uint16_t endpointId, Request request)
     {
-        std::scoped_lock operationLock(mOperationMutex);
+        auto operation = mAdmission.AcquireNode(nodeId);
         EnsureOpen();
         CommandOperationState<Request> state(endpointId, std::move(request));
         PlatformMgr().LockChipStack();
@@ -1718,7 +1876,7 @@ public:
     Value Read(uint64_t nodeId, uint16_t endpointId,
                typename ReadOperationState<AttributeType, Value>::Converter converter)
     {
-        std::scoped_lock operationLock(mOperationMutex);
+        auto operation = mAdmission.AcquireNode(nodeId);
         EnsureOpen();
         ReadOperationState<AttributeType, Value> state(endpointId, std::move(converter));
         PlatformMgr().LockChipStack();
@@ -1742,9 +1900,10 @@ public:
                                                                       std::chrono::steady_clock::time_point::max())
     {
         deadline = std::min(deadline, std::chrono::steady_clock::now() + kInteractionTimeout);
-        auto operationLock = AcquireOperationLock(mOperationMutex, cancellation, deadline);
+        auto operation = mAdmission.AcquireNode(nodeId, cancellation, deadline);
         EnsureOpen();
         auto state = std::make_shared<GenericReadState>(endpointId, clusterId, attributeId, false, 0, 0);
+        auto cleanup = chip::ScopeExit([&] { state->Close(); });
         if (cancellation && cancellation->load(std::memory_order_acquire))
         {
             throw hresult_canceled();
@@ -1760,13 +1919,11 @@ public:
             if (cancellation && cancellation->load(std::memory_order_acquire))
             {
                 lock.unlock();
-                state->Close();
                 throw hresult_canceled();
             }
             if (std::chrono::steady_clock::now() >= deadline)
             {
                 lock.unlock();
-                state->Close();
                 throw hresult_error(HRESULT_FROM_WIN32(ERROR_TIMEOUT), L"Matter attribute read timed out.");
             }
             const auto wake = cancellation ? std::min(deadline, std::chrono::steady_clock::now() + std::chrono::milliseconds(100))
@@ -1776,7 +1933,6 @@ public:
         CHIP_ERROR result = state->result;
         auto value        = state->value;
         lock.unlock();
-        state->Close();
         CheckChipError(result, L"Read Matter attribute");
         if (!value)
         {
@@ -1801,6 +1957,7 @@ public:
     std::pair<std::optional<uint16_t>, std::optional<uint16_t>> SelectedCameraStreams(uint64_t handle)
     {
 #if CHIP_CONTROLLER_BUILD_WEBRTC_SIGNALING
+        auto lifetime = mAdmission.AcquireLifetime();
         std::scoped_lock operationLock(mOperationMutex);
         EnsureOpen();
         CameraStackLock lock;
@@ -1821,7 +1978,9 @@ public:
         std::vector<Controller::MatterCameraIceServer> const & iceServers)
     {
 #if CHIP_CONTROLLER_BUILD_WEBRTC_SIGNALING
-        std::scoped_lock operationLock(mOperationMutex);
+        const auto deadline = std::chrono::steady_clock::now() + kInteractionTimeout;
+        auto operation = mAdmission.AcquireNode(nodeId, canceled, deadline);
+        auto cameraLock = mAdmission.AcquireGate(mCameraOperationMutex, canceled, deadline);
         EnsureOpen();
         if (!mCameraHost)
         {
@@ -1921,6 +2080,7 @@ public:
 
     void EnsureCameraSignalingEnabled()
     {
+        auto lifetime = mAdmission.AcquireLifetime();
         std::scoped_lock operationLock(mOperationMutex);
         EnsureOpen();
 #if CHIP_CONTROLLER_BUILD_WEBRTC_SIGNALING
@@ -1937,7 +2097,11 @@ public:
                               std::shared_ptr<std::atomic_bool> const & canceled)
     {
 #if CHIP_CONTROLLER_BUILD_WEBRTC_SIGNALING
-        std::scoped_lock operationLock(mOperationMutex);
+        const auto deadline = std::chrono::steady_clock::now() + kInteractionTimeout;
+        auto lifetime = mAdmission.AcquireLifetime(canceled, deadline);
+        auto operation = mAdmission.AcquireNodeWithLifetime(
+            std::move(lifetime), CameraPeerNode(handle), canceled, deadline);
+        auto cameraLock = mAdmission.AcquireGate(mCameraOperationMutex, canceled, deadline);
         EnsureOpen();
         if (!mCameraHost)
         {
@@ -1973,6 +2137,7 @@ public:
     Controller::MatterCameraSignal PollCameraSignal(uint64_t handle)
     {
 #if CHIP_CONTROLLER_BUILD_WEBRTC_SIGNALING
+        auto lifetime = mAdmission.AcquireLifetime();
         std::unique_lock operationLock(mOperationMutex, std::try_to_lock);
         if (!operationLock.owns_lock())
         {
@@ -2008,13 +2173,18 @@ public:
     Controller::MatterCameraSessionState CameraState(uint64_t handle)
     {
 #if CHIP_CONTROLLER_BUILD_WEBRTC_SIGNALING
+        auto lifetime = mAdmission.AcquireCleanup();
+        if (!lifetime.owns_lock())
+        {
+            return Controller::MatterCameraSessionState::Closed;
+        }
         std::scoped_lock operationLock(mOperationMutex);
         using State = Controller::MatterCameraSessionState;
+        CameraStackLock lock;
         if (mClosed || !mCameraHost || mCameraHost->ActiveHandle() != handle)
         {
             return State::Closed;
         }
-        CameraStackLock lock;
         CameraControllerRuntime::Cluster::SessionState state;
         CheckChipError(mCameraHost->GetSessionState(handle, state), L"Read camera signaling state");
         switch (state)
@@ -2033,11 +2203,27 @@ public:
     void CloseCamera(uint64_t handle)
     {
 #if CHIP_CONTROLLER_BUILD_WEBRTC_SIGNALING
-        std::scoped_lock operationLock(mOperationMutex);
+        auto lifetime = mAdmission.AcquireCleanup();
+        if (!lifetime.owns_lock())
+        {
+            return;
+        }
         if (mClosed || !mCameraHost)
         {
             return;
         }
+        uint64_t node;
+        {
+            CameraStackLock lock;
+            if (mCameraHost->Validate(handle) != CHIP_NO_ERROR)
+            {
+                return;
+            }
+            CheckChipError(mCameraHost->GetPeerNode(handle, node), L"Read camera cleanup peer");
+        }
+        const auto deadline = std::chrono::steady_clock::now() + kInteractionTimeout;
+        auto operation = mAdmission.AcquireNodeWithLifetime(std::move(lifetime), node, {}, deadline);
+        auto cameraLock = mAdmission.AcquireGate(mCameraOperationMutex, {}, deadline);
         {
             CameraStackLock lock;
             if (mCameraHost->Validate(handle) != CHIP_NO_ERROR)
@@ -2062,9 +2248,10 @@ public:
     {
         std::vector<uint8_t> encoded;
         CheckChipError(EncodePropertySetRoot(value, encoded), L"Encode Matter attribute value");
-        std::scoped_lock operationLock(mOperationMutex);
+        auto operation = mAdmission.AcquireNode(nodeId);
         EnsureOpen();
         GenericWriteState state(endpointId, clusterId, attributeId, std::move(encoded), timedWriteTimeout);
+        auto cleanup = chip::ScopeExit([&] { state.ReleaseClient(); });
         StartConnectedOperation(nodeId, state.onConnected, state.onConnectionFailure);
         std::unique_lock lock(state.mutex);
         if (!state.condition.wait_for(lock, InteractionWaitTimeout(timedWriteTimeout), [&state]() { return state.complete; }))
@@ -2093,10 +2280,11 @@ public:
         }
         std::vector<uint8_t> encoded;
         CheckChipError(EncodePropertySetRoot(arguments, encoded), L"Encode Matter command arguments");
-        std::scoped_lock operationLock(mOperationMutex);
+        auto operation = mAdmission.AcquireNode(nodeId);
         EnsureOpen();
         GenericInvokeState state(endpointId, clusterId, commandId, std::move(encoded), timedInvokeTimeout, responseCommand,
                                  responseData);
+        auto cleanup = chip::ScopeExit([&] { state.ReleaseSender(); });
         if (allocationStage != nullptr)
         {
             // Once connection/dispatch begins, conservatively preserve uncertain allocation ownership on failure.
@@ -2126,7 +2314,7 @@ public:
         {
             throw hresult_invalid_argument(L"The minimum subscription interval cannot exceed the maximum interval.");
         }
-        std::scoped_lock operationLock(mOperationMutex);
+        auto operation = mAdmission.AcquireNode(nodeId);
         EnsureOpen();
         auto projectedWeak = std::make_shared<winrt::weak_ref<Controller::AttributeSubscription>>();
         auto state         = std::make_shared<GenericReadState>(
@@ -2142,6 +2330,13 @@ public:
                     winrt::get_self<implementation::AttributeSubscription>(subscription)->Publish(args);
                 }
             });
+        bool isRetained = false;
+        auto cleanup = chip::ScopeExit([&] {
+            if (!isRetained)
+            {
+                state->Close();
+            }
+        });
         auto runtimeWeak  = weak_from_this();
         auto subscription = winrt::make<implementation::AttributeSubscription>([runtimeWeak, state]() {
             if (auto runtime = runtimeWeak.lock())
@@ -2177,16 +2372,21 @@ public:
             state->Close();
             throw hresult_error(E_FAIL, L"The Matter subscription ended before it was established.");
         }
-        mSubscriptions.push_back(state);
+        {
+            std::scoped_lock subscriptionLock(mOperationMutex);
+            mSubscriptions.push_back(state);
+        }
+        isRetained = true;
         return subscription;
     }
 
     std::vector<Controller::EventValue> ReadEvents(uint64_t nodeId, EndpointId endpointId, ClusterId clusterId, EventId eventId,
                                                    bool urgent, EventNumber minimumEventNumber)
     {
-        std::scoped_lock operationLock(mOperationMutex);
+        auto operation = mAdmission.AcquireNode(nodeId);
         EnsureOpen();
         auto state = std::make_shared<GenericEventReadState>(endpointId, clusterId, eventId, urgent, minimumEventNumber, false, 0, 0);
+        auto cleanup = chip::ScopeExit([&] { state->Close(); });
         StartConnectedOperation(nodeId, state->onConnected, state->onConnectionFailure);
         std::unique_lock lock(state->mutex);
         if (!state->condition.wait_for(lock, kInteractionTimeout, [&state]() { return state->complete; }))
@@ -2211,7 +2411,7 @@ public:
         {
             throw hresult_invalid_argument(L"The minimum subscription interval cannot exceed the maximum interval.");
         }
-        std::scoped_lock operationLock(mOperationMutex);
+        auto operation = mAdmission.AcquireNode(nodeId);
         EnsureOpen();
         auto projectedWeak = std::make_shared<winrt::weak_ref<Controller::EventSubscription>>();
         auto state = std::make_shared<GenericEventReadState>(
@@ -2223,6 +2423,13 @@ public:
                     winrt::get_self<implementation::EventSubscription>(subscription)->Publish(args);
                 }
             });
+        bool isRetained = false;
+        auto cleanup = chip::ScopeExit([&] {
+            if (!isRetained)
+            {
+                state->Close();
+            }
+        });
         auto runtimeWeak  = weak_from_this();
         auto subscription = winrt::make<implementation::EventSubscription>([runtimeWeak, state]() {
             if (auto runtime = runtimeWeak.lock())
@@ -2258,11 +2465,30 @@ public:
             state->Close();
             throw hresult_error(E_FAIL, L"The Matter event subscription ended before it was established.");
         }
-        mEventSubscriptions.push_back(state);
+        {
+            std::scoped_lock subscriptionLock(mOperationMutex);
+            mEventSubscriptions.push_back(state);
+        }
+        isRetained = true;
         return subscription;
     }
 
 private:
+#if CHIP_CONTROLLER_BUILD_WEBRTC_SIGNALING
+    uint64_t CameraPeerNode(uint64_t handle)
+    {
+        EnsureOpen();
+        CameraStackLock lock;
+        if (!mCameraHost)
+        {
+            throw hresult_illegal_method_call(L"Camera signaling is disabled.");
+        }
+        uint64_t node;
+        CheckChipError(mCameraHost->GetPeerNode(handle, node), L"Read camera signaling peer");
+        return node;
+    }
+#endif
+
     void EnsureOpen()
     {
         std::scoped_lock lock(mMutex);
@@ -2274,15 +2500,25 @@ private:
 
     void CloseAttributeSubscription(std::shared_ptr<GenericReadState> const & state)
     {
-        std::scoped_lock operationLock(mOperationMutex);
+        auto lifetime = mAdmission.AcquireCleanup();
+        if (!lifetime.owns_lock())
+        {
+            return;
+        }
         state->Close();
+        std::scoped_lock operationLock(mOperationMutex);
         mSubscriptions.erase(std::remove(mSubscriptions.begin(), mSubscriptions.end(), state), mSubscriptions.end());
     }
 
     void CloseEventSubscription(std::shared_ptr<GenericEventReadState> const & state)
     {
-        std::scoped_lock operationLock(mOperationMutex);
+        auto lifetime = mAdmission.AcquireCleanup();
+        if (!lifetime.owns_lock())
+        {
+            return;
+        }
         state->Close();
+        std::scoped_lock operationLock(mOperationMutex);
         mEventSubscriptions.erase(std::remove(mEventSubscriptions.begin(), mEventSubscriptions.end(), state),
                                   mEventSubscriptions.end());
     }
@@ -2486,6 +2722,8 @@ private:
 
     std::mutex mMutex;
     std::timed_mutex mOperationMutex;
+    RuntimeOperationAdmission mAdmission;
+    std::timed_mutex mCameraOperationMutex;
     CameraAudioAllocationOwnership mAudioOwnership;
     hstring mStoragePath;
     uint64_t mControllerNodeId;
@@ -3098,6 +3336,10 @@ void EventSubscription::Publish(Controller::EventReportEventArgs const & args)
 {
     {
         std::scoped_lock lock(mReportMutex);
+        if (!mClose)
+        {
+            return;
+        }
         if (mReportHandlerCount == 0 || mDrainingPendingReports)
         {
             if (mPendingReports.size() == kMaximumPendingReports)
@@ -3200,6 +3442,10 @@ void AttributeSubscription::Publish(Controller::AttributeReportEventArgs const &
 {
     {
         std::scoped_lock lock(mReportMutex);
+        if (!mClose)
+        {
+            return;
+        }
         if (mReportHandlerCount == 0 || mDrainingPendingReports)
         {
             if (mPendingReports.size() == kMaximumPendingReports)
@@ -3469,8 +3715,11 @@ MatterController::ReadAttributeAsync(uint64_t nodeId, Controller::AttributePath 
         throw hresult_invalid_argument(L"path cannot be null.");
     }
     auto runtime = Runtime();
+    auto canceled = std::make_shared<std::atomic_bool>(false);
+    auto cancellation = co_await get_cancellation_token();
+    cancellation.callback([canceled] { canceled->store(true, std::memory_order_release); });
     co_await resume_background();
-    auto data = runtime->ReadAttribute(nodeId, path.EndpointId(), path.ClusterId(), path.AttributeId());
+    auto data = runtime->ReadAttribute(nodeId, path.EndpointId(), path.ClusterId(), path.AttributeId(), canceled);
     co_return winrt::make<implementation::AttributeValue>(path, data);
 }
 
