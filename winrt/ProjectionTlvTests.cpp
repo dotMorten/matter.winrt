@@ -5,6 +5,49 @@
 #include <future>
 #include <stdexcept>
 
+namespace winrt::Matter::Windows::Controller::implementation {
+struct RuntimeAdmissionTests
+{
+    static void VerifySubscriptionCleanup(std::shared_ptr<ControllerRuntime> const & runtime)
+    {
+        auto attribute = std::make_shared<GenericReadState>(0, 1, 2, true, 0, 10);
+        auto event = std::make_shared<GenericEventReadState>(0, 1, 2, false, 0, true, 0, 10);
+        runtime->mSubscriptions.push_back(attribute);
+        runtime->mEventSubscriptions.push_back(event);
+        std::future<void> closeAttribute;
+        std::future<void> closeEvent;
+        {
+            auto exclusive = runtime->mAdmission.AcquireExclusive();
+            chip::DeviceLayer::PlatformMgr().LockChipStack();
+            closeAttribute = std::async(std::launch::async, [&] { runtime->CloseAttributeSubscription(attribute); });
+            closeEvent = std::async(std::launch::async, [&] { runtime->CloseEventSubscription(event); });
+            chip::DeviceLayer::PlatformMgr().UnlockChipStack();
+        }
+        closeAttribute.get();
+        closeEvent.get();
+        {
+            std::unique_lock lock(attribute->mutex);
+            if (!attribute->condition.wait_for(lock, std::chrono::seconds(2), [&] { return attribute->closed; }))
+            {
+                throw std::runtime_error("Attribute cleanup blocked behind the report/lifetime locks");
+            }
+        }
+        {
+            std::unique_lock lock(event->mutex);
+            if (!event->condition.wait_for(lock, std::chrono::seconds(2), [&] { return event->closed; }))
+            {
+                throw std::runtime_error("Event cleanup blocked behind the report/lifetime locks");
+            }
+        }
+        runtime->Close();
+        runtime->CloseAttributeSubscription(attribute);
+        runtime->CloseEventSubscription(event);
+        attribute->Close();
+        event->Close();
+    }
+};
+}
+
 namespace {
 namespace Implementation = winrt::Matter::Windows::Controller::implementation;
 namespace Camera = chip::app::Clusters::CameraAvStreamManagement;
@@ -688,6 +731,102 @@ void TestLateSessionCancellation()
     Require(releases == 1, "Late cancellation did not release the session exactly once");
     std::cout << "PASS cancellation after session creation retains once-only cleanup ownership\n";
 }
+
+void TestNodeOperationAdmission()
+{
+    Implementation::RuntimeOperationAdmission admission;
+    std::optional<Implementation::RuntimeOperationAdmission::NodeLease> owner;
+    owner.emplace(admission.AcquireNode(101));
+    auto expired = std::async(std::launch::async, [&] {
+        RequireHResult([&] {
+            auto lease = admission.AcquireNode(
+                101, {}, std::chrono::steady_clock::now() + std::chrono::milliseconds(50));
+        }, HRESULT_FROM_WIN32(ERROR_TIMEOUT), "A queued node operation ignored its deadline");
+    });
+    auto unrelated = std::async(std::launch::async, [&] {
+        auto lease = admission.AcquireNode(202);
+    });
+    const bool unrelatedCompleted = unrelated.wait_for(std::chrono::seconds(1)) == std::future_status::ready;
+    auto cancellation = std::make_shared<std::atomic_bool>(false);
+    auto sameNode = std::async(std::launch::async, [&] {
+        RequireHResult([&] {
+            auto lease = admission.AcquireNode(
+                101, cancellation, std::chrono::steady_clock::now() + std::chrono::seconds(5));
+        }, winrt::hresult_canceled().code(), "A queued node operation ignored cancellation");
+    });
+    const bool sameNodeBlocked = sameNode.wait_for(std::chrono::milliseconds(100)) == std::future_status::timeout;
+    cancellation->store(true, std::memory_order_release);
+    const bool canceledWhileBlocked = sameNode.wait_for(std::chrono::seconds(1)) == std::future_status::ready;
+    owner.reset();
+    expired.get();
+    unrelated.get();
+    sameNode.get();
+    Require(unrelatedCompleted && sameNodeBlocked && canceledWhileBlocked,
+            "Per-node admission lost unrelated progress, same-node exclusion or queued cancellation");
+
+    {
+        auto exclusive = admission.AcquireExclusive();
+        auto blockedByExclusive = std::async(std::launch::async, [&] {
+            RequireHResult([&] {
+                auto lease = admission.AcquireNode(
+                    202, {}, std::chrono::steady_clock::now() + std::chrono::milliseconds(50));
+            }, HRESULT_FROM_WIN32(ERROR_TIMEOUT), "An exclusive lifetime change admitted network work");
+        });
+        blockedByExclusive.get();
+    }
+
+    for (unsigned cycle = 0; cycle < 100; ++cycle)
+    {
+        auto lease = admission.AcquireNode(101);
+        Require(lease.nodeLock.owns_lock(), "Expired node gate could not be reused");
+    }
+    owner.emplace(admission.AcquireNode(101));
+    auto queued = std::async(std::launch::async, [&] {
+        RequireHResult([&] {
+            auto lease = admission.AcquireNode(101);
+        }, winrt::hresult_illegal_method_call().code(), "A queued operation entered during shutdown");
+    });
+    std::promise<void> shutdownStarted;
+    auto shuttingDown = std::async(std::launch::async, [&] {
+        shutdownStarted.set_value();
+        auto barrier = admission.BeginShutdown();
+    });
+    shutdownStarted.get_future().wait();
+    const bool waitedForOwner = shuttingDown.wait_for(std::chrono::milliseconds(150)) == std::future_status::timeout;
+    RequireHResult([&] {
+        auto lease = admission.AcquireNode(303);
+    }, winrt::hresult_illegal_method_call().code(), "Shutdown admitted a new operation");
+    const bool queuedRefused = queued.wait_for(std::chrono::seconds(1)) == std::future_status::ready;
+    owner.reset();
+    queued.get();
+    shuttingDown.get();
+    Require(waitedForOwner && queuedRefused, "Shutdown lost its lifetime barrier or retained queued work");
+    Require(!admission.AcquireCleanup().owns_lock(), "Closed runtime admitted subscription cleanup");
+    std::cout << "PASS cross-node progress, same-node exclusion, queued cancellation, gate reuse and shutdown barrier\n";
+}
+
+void TestSubscriptionCleanupAdmission()
+{
+    unsigned deliveredReports = 0;
+    auto attribute = winrt::make_self<Implementation::AttributeSubscription>([] {});
+    auto event = winrt::make_self<Implementation::EventSubscription>([] {});
+    attribute->CloseAsync().get();
+    event->CloseAsync().get();
+    attribute->Publish(nullptr);
+    event->Publish(nullptr);
+    attribute->ReportReceived([&](auto const &, auto const &) { ++deliveredReports; });
+    event->ReportReceived([&](auto const &, auto const &) { ++deliveredReports; });
+    Require(deliveredReports == 0, "A closed subscription retained late reports for new handlers");
+    const auto storage = std::filesystem::temp_directory_path() /
+        ("matter-subscription-admission-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    auto cleanup = chip::ScopeExit([&] { std::filesystem::remove_all(storage); });
+    auto options = winrt::make<Implementation::ControllerOptions>();
+    options.StoragePath(storage.wstring());
+    auto runtime = Implementation::ControllerRuntime::Create(options);
+    auto close = chip::ScopeExit([&] { runtime->Close(); });
+    Implementation::RuntimeAdmissionTests::VerifySubscriptionCleanup(runtime);
+    std::cout << "PASS attribute/event cleanup, exclusive lifetime contention and post-shutdown close\n";
+}
 } // namespace
 
 int main()
@@ -709,6 +848,8 @@ int main()
         TestCommissioningEvidence();
         TestReadOperationAdmission();
         TestLateSessionCancellation();
+        TestNodeOperationAdmission();
+        TestSubscriptionCleanupAdmission();
     }
     catch (winrt::hresult_error const & error)
     {

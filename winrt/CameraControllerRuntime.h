@@ -138,6 +138,7 @@ public:
             return error;
         }
         mClient = std::make_unique<Client>(mEndpoint->Signaling(), mNativeHandle);
+        mPeerNode = peer.GetNodeId();
         mActiveHandle = mNextHandle++;
         handle = mActiveHandle;
         return CHIP_NO_ERROR;
@@ -146,6 +147,13 @@ public:
     CHIP_ERROR Validate(uint64_t handle) const
     {
         VerifyOrReturnError(handle != 0 && handle == mActiveHandle && mEndpoint && mClient, CHIP_ERROR_INCORRECT_STATE);
+        return CHIP_NO_ERROR;
+    }
+
+    CHIP_ERROR GetPeerNode(uint64_t handle, chip::NodeId & node) const
+    {
+        ReturnErrorOnFailure(Validate(handle));
+        node = mPeerNode;
         return CHIP_NO_ERROR;
     }
 
@@ -376,6 +384,7 @@ private:
     uint64_t mNextHandle = 1;
     uint64_t mActiveHandle = 0;
     uint64_t mNativeHandle = 0;
+    chip::NodeId mPeerNode = chip::kUndefinedNodeId;
 };
 
 } // namespace winrt::Matter::Windows::Controller::implementation
